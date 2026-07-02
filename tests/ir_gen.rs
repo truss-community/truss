@@ -4082,7 +4082,7 @@ fn run_ir_gen(code: &str) -> (String, Rc<RefCell<TrussDiagnosticEngine>>) {
 fn test_irgen_import_module_call() {
     let (llvm_ir, engine) = run_ir_gen(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.bar() }",
     );
     assert!(
@@ -4097,7 +4097,7 @@ fn test_irgen_import_module_call() {
 fn test_irgen_import_wildcard_call() {
     let (llvm_ir, engine) = run_ir_gen(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.*
+         import package.Foo.*
          func test() -> Int32 { return bar() }",
     );
     assert!(
@@ -4105,7 +4105,6 @@ fn test_irgen_import_wildcard_call() {
         "Expected 'bar' function in IR, got:\n{}",
         llvm_ir
     );
-    eprintln!("{:?}", engine.borrow().get_errors());
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
 }
 
@@ -4113,7 +4112,7 @@ fn test_irgen_import_wildcard_call() {
 fn test_irgen_import_member_call() {
     let (llvm_ir, engine) = run_ir_gen(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo.Bar.baz
+         import package.Foo.Bar.baz
          func test() -> Int32 { return baz() }",
     );
     assert!(
@@ -4121,7 +4120,6 @@ fn test_irgen_import_member_call() {
         "Expected 'baz' function in IR, got:\n{}",
         llvm_ir
     );
-    eprintln!("{:?}", engine.borrow().get_errors());
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
 }
 
@@ -4129,7 +4127,7 @@ fn test_irgen_import_member_call() {
 fn test_irgen_import_nested_module_call() {
     let (llvm_ir, engine) = run_ir_gen(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.Bar.baz() }",
     );
     assert!(
@@ -4137,7 +4135,6 @@ fn test_irgen_import_nested_module_call() {
         "Expected 'baz' function in IR, got:\n{}",
         llvm_ir
     );
-    eprintln!("{:?}", engine.borrow().get_errors());
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
 }
 
@@ -4153,7 +4150,6 @@ fn test_irgen_import_package_module_call() {
         "Expected 'bar' function in IR, got:\n{}",
         llvm_ir
     );
-    eprintln!("{:?}", engine.borrow().get_errors());
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
 }
 
@@ -4169,7 +4165,6 @@ fn test_irgen_import_package_member_call() {
         "Expected 'baz' function in IR, got:\n{}",
         llvm_ir
     );
-    eprintln!("{:?}", engine.borrow().get_errors());
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
 }
 
