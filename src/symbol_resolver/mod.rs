@@ -2179,6 +2179,12 @@ impl SymbolResolver {
                                     *sc = Some(WeakSymbol(Rc::downgrade(&super_sym)));
                                 }
                             }
+                        } else {
+                            self.emit_error(
+                                TrussDiagnosticCode::UndefinedVariable,
+                                format!("undefined superclass '{}'", super_name.value),
+                                super_name,
+                            );
                         }
                     }
                 }
@@ -2957,13 +2963,8 @@ impl SymbolResolver {
                 }
             }
             Expression::ArrayLiteral { elements, .. } => {
-                if elements.len() == 1
-                    && matches!(&*elements[0].borrow(), Expression::Variable { .. })
-                {
-                } else {
-                    for element in elements {
-                        self.resolve_expression(element.clone());
-                    }
+                for element in elements {
+                    self.resolve_expression(element.clone());
                 }
             }
             Expression::DictionaryLiteral { elements, .. } => {
@@ -2989,7 +2990,11 @@ impl SymbolResolver {
                         *symbol = Some(WeakSymbol(Rc::downgrade(&sym)));
                     }
                     Err(_) => {
-                        // self is not in scope; skip silently for implicit self support
+                        self.emit_error(
+                            TrussDiagnosticCode::UndefinedVariable,
+                            "'self' is only available inside methods",
+                            token.as_ref(),
+                        );
                     }
                 }
             }

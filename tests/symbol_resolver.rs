@@ -2511,7 +2511,7 @@ fn test_module_creates_crate_entry() {
     resolver.resolve(&program, "test".to_string());
     let modules = &krate.borrow().modules;
     assert!(
-        modules.contains_key("foo"),
+        modules.contains_key("test.foo"),
         "module 'foo' should be in crate"
     );
 }
@@ -2552,7 +2552,7 @@ fn test_module_func_symbol_registered_in_module_scope() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine);
     resolver.resolve(&program, "test".to_string());
-    let foo_module = krate.borrow().modules.get("foo").cloned();
+    let foo_module = krate.borrow().modules.get("test.foo").cloned();
     assert!(foo_module.is_some(), "module 'foo' should be in crate");
     let foo_scope = foo_module.unwrap().borrow().scope.clone();
     assert!(foo_scope.is_some(), "module 'foo' should have a scope");
@@ -2580,14 +2580,14 @@ fn test_nested_module_creates_child_entry() {
     resolver.resolve(&program, "test".to_string());
     let modules = &krate.borrow().modules;
     assert!(
-        modules.contains_key("foo"),
+        modules.contains_key("test.foo"),
         "module 'foo' should be in crate"
     );
     assert!(
-        modules.contains_key("foo.bar"),
+        modules.contains_key("test.foo.bar"),
         "module 'foo.bar' should be in crate"
     );
-    let foo_module = modules.get("foo").unwrap().borrow();
+    let foo_module = modules.get("test.foo").unwrap().borrow();
     assert!(
         foo_module.children.contains_key("bar"),
         "'bar' should be child of 'foo'"
@@ -2609,7 +2609,7 @@ fn test_nested_module_func_resolved_in_nested_scope() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine);
     resolver.resolve(&program, "test".to_string());
-    let bar_module = krate.borrow().modules.get("foo.bar").cloned();
+    let bar_module = krate.borrow().modules.get("test.foo.bar").cloned();
     assert!(bar_module.is_some(), "module 'foo.bar' should be in crate");
     let bar_scope = bar_module.unwrap().borrow().scope.clone();
     assert!(bar_scope.is_some(), "module 'foo.bar' should have a scope");
@@ -2637,19 +2637,19 @@ fn test_dotted_path_module_creates_nested_modules() {
     resolver.resolve(&program, "test".to_string());
     let modules = &krate.borrow().modules;
     assert!(
-        modules.contains_key("foo"),
+        modules.contains_key("test.foo"),
         "module 'foo' should be in crate"
     );
     assert!(
-        modules.contains_key("foo.bar"),
+        modules.contains_key("test.foo.bar"),
         "module 'foo.bar' should be in crate"
     );
-    let foo_module = modules.get("foo").unwrap().borrow();
+    let foo_module = modules.get("test.foo").unwrap().borrow();
     assert!(
         foo_module.children.contains_key("bar"),
         "'bar' should be child of 'foo'"
     );
-    let bar_module = modules.get("foo.bar").unwrap().borrow();
+    let bar_module = modules.get("test.foo.bar").unwrap().borrow();
     let bar_scope = bar_module.scope.clone().unwrap();
     let baz_sym = bar_scope.borrow().get_symbol("baz");
     assert!(
@@ -2674,11 +2674,11 @@ fn test_multiple_modules_do_not_conflict() {
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine);
     resolver.resolve(&program, "test".to_string());
     let modules = &krate.borrow().modules;
-    let a_module = modules.get("a").unwrap().borrow();
+    let a_module = modules.get("test.a").unwrap().borrow();
     let a_scope = a_module.scope.clone().unwrap();
     assert!(a_scope.borrow().get_symbol("fa").is_some());
     assert!(a_scope.borrow().get_symbol("fb").is_none());
-    let b_module = modules.get("b").unwrap().borrow();
+    let b_module = modules.get("test.b").unwrap().borrow();
     let b_scope = b_module.scope.clone().unwrap();
     assert!(b_scope.borrow().get_symbol("fb").is_some());
     assert!(b_scope.borrow().get_symbol("fa").is_none());
@@ -2826,7 +2826,7 @@ fn run_resolver(
 fn test_import_module_symbol() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.bar() }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -2842,7 +2842,7 @@ fn test_import_module_symbol() {
 fn test_import_module_member() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo.Bar.baz
+         import package.Foo.Bar.baz
          func test() -> Int32 { return baz() }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -2858,7 +2858,7 @@ fn test_import_module_member() {
 fn test_import_module_wildcard() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.*
+         import package.Foo.*
          func test() -> Int32 { return bar() }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -2885,7 +2885,7 @@ fn test_import_module_not_found() {
 fn test_import_nested_module() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.Bar.baz() }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -2901,7 +2901,7 @@ fn test_import_nested_module() {
 fn test_import_deep_nested_member() {
     let (statements, engine, _krate) = run_resolver(
         "module A { module B { module C { func foo() -> Int32 { return 1 } } } }
-         import A.B.C.foo
+         import package.A.B.C.foo
          func test() -> Int32 { return foo() }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -2920,7 +2920,7 @@ fn test_import_wildcard_with_module_decl() {
             func add(a: Int32, b: Int32) -> Int32 { return a + b }
             func sub(a: Int32, b: Int32) -> Int32 { return a - b }
          }
-         import Math.*
+         import package.Math.*
          func test() -> Int32 { return add(1, 2) }",
     );
     let errors = engine.borrow().get_diagnostics().len();
@@ -4681,7 +4681,7 @@ fn test_const_generic_default_value_resolves() {
 fn test_import_selective_member() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } func baz() -> Int32 { return 99 } }
-         import Foo.{bar}
+         import package.Foo.{bar}
          func test() -> Int32 { return bar() }",
     );
     assert_eq!(
@@ -4696,7 +4696,7 @@ fn test_import_selective_member() {
 fn test_import_selective_member_with_alias() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.{bar as myBar}
+         import package.Foo.{bar as myBar}
          func test() -> Int32 { return myBar() }",
     );
     assert_eq!(
@@ -4711,7 +4711,7 @@ fn test_import_selective_member_with_alias() {
 fn test_import_selective_member_original_name_not_visible() {
     let engine = create_engine();
     let code = "module Foo { func bar() -> Int32 { return 42 } func baz() -> Int32 { return 99 } }
-         import Foo.{bar as myBar}
+         import package.Foo.{bar as myBar}
          func test() -> Int32 { return bar() }";
     let mut lexer = Lexer::new(
         CharStream::new(code.to_string(), Rc::new("".to_string())),
@@ -4732,7 +4732,7 @@ fn test_import_selective_member_original_name_not_visible() {
 fn test_import_selective_with_skip() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } func baz() -> Int32 { return 99 } }
-         import Foo.{bar as _, baz}
+         import package.Foo.{bar as _, baz}
          func test() -> Int32 { return baz() }",
     );
     assert_eq!(
@@ -4747,7 +4747,7 @@ fn test_import_selective_with_skip() {
 fn test_import_selective_skip_hides_symbol() {
     let engine = create_engine();
     let code = "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.{bar as _}
+         import package.Foo.{bar as _}
          func test() -> Int32 { return bar() }";
     let mut lexer = Lexer::new(
         CharStream::new(code.to_string(), Rc::new("".to_string())),
@@ -4772,7 +4772,7 @@ fn test_import_selective_multiple_members() {
             func sub(a: Int32, b: Int32) -> Int32 { return a - b }
             func mul(a: Int32, b: Int32) -> Int32 { return a * b }
          }
-         import Math.{add, sub}
+         import package.Math.{add, sub}
          func test() -> Int32 { return add(1, sub(2, 3)) }",
     );
     assert_eq!(
@@ -4787,7 +4787,7 @@ fn test_import_selective_multiple_members() {
 fn test_import_single_as_alias() {
     let (statements, engine, _krate) = run_resolver(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.bar as myBar
+         import package.Foo.bar as myBar
          func test() -> Int32 { return myBar() }",
     );
     assert_eq!(
