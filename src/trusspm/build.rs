@@ -305,16 +305,12 @@ impl BuildOrchestrator {
                     self.engine.clone(),
                 );
                 let module = resolver.resolve(&dep_prog, target_name.clone());
-                let dummy_program = Program {
-                    file: Rc::new(String::new()),
-                    statements: Vec::new(),
-                };
                 let mut type_resolver = TypeResolver::new(
                     self.packages.clone(),
                     target_name.clone(),
                     self.engine.clone(),
                 );
-                type_resolver.resolve(&dummy_program, module);
+                type_resolver.resolve(&dep_prog, module);
                 if self.engine.borrow().has_errors() {
                     let formatted =
                         duck_diagnostic::format_all_smart(&*self.engine.borrow(), false);

@@ -13184,6 +13184,30 @@ impl<'ctx> IRGenerator<'ctx> {
             Expression::Binary { left, right, .. } => self
                 .infer_type_from_expression(left.clone())
                 .or_else(|_| self.infer_type_from_expression(right.clone())),
+            Expression::Call { ty, .. } => {
+                if let Some(ty) = ty {
+                    self.resolve_type(ty.clone())
+                } else {
+                    self.emit_error(
+                        TrussDiagnosticCode::TypeInferenceFailed,
+                        "Cannot infer type from this expression",
+                        None,
+                    );
+                    anyhow::bail!("Cannot infer type")
+                }
+            }
+            Expression::MemberAccess { ty, .. } => {
+                if let Some(ty) = ty {
+                    self.resolve_type(ty.clone())
+                } else {
+                    self.emit_error(
+                        TrussDiagnosticCode::TypeInferenceFailed,
+                        "Cannot infer type from this expression",
+                        None,
+                    );
+                    anyhow::bail!("Cannot infer type")
+                }
+            }
             Expression::SizeOf { .. } => self.resolve_type(Rc::new(RefCell::new(Type::Struct(
                 "UInt64".to_string(),
                 WeakSymbol(std::rc::Weak::new()),
