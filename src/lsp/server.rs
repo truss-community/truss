@@ -462,15 +462,199 @@ impl LanguageServer {
             all_stmts.push(stmt.clone());
         }
 
+        let mut effective_pkg_name = "main".to_string();
+
         if let Some(proj_dir) = self.find_project_dir(file_path) {
             if let Ok(manifest) = Manifest::from_project_dir(
                 &proj_dir,
                 Rc::new(RefCell::new(TrussDiagnosticEngine::new())),
             ) {
                 let pkg_name = &manifest.name;
+                effective_pkg_name = pkg_name.clone();
                 if !packages.contains_key(pkg_name) {
                     let pkg = Rc::new(RefCell::new(Package::new(pkg_name.clone())));
                     packages.insert(pkg_name.clone(), pkg);
+                }
+
+                let local_targets: Vec<String> = manifest
+                    .targets
+                    .iter()
+                    .filter(|t| t.name != *pkg_name)
+                    .map(|t| t.name.clone())
+                    .collect();
+
+                let current_target_name = {
+                    let proj_path = Path::new(&proj_dir);
+                    let file_path_obj = Path::new(file_path);
+                    let mut found: Option<String> = None;
+                    if let Ok(rel) = file_path_obj.strip_prefix(proj_path) {
+                        let comps: Vec<_> = rel.components().collect();
+                        if comps.len() >= 2 {
+                            if let std::path::Component::Normal(first) = comps[0] {
+                                if first == std::ffi::OsStr::new("Sources") {
+                                    if let std::path::Component::Normal(second) = comps[1] {
+                                        found = second.to_str().map(|s| s.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    found.unwrap_or_else(|| pkg_name.clone())
+                };
+
+                let needed_local_targets: std::collections::HashSet<String> = {
+                    let mut needed = std::collections::HashSet::new();
+                    let mut to_visit = vec![current_target_name.clone()];
+                    while let Some(t) = to_visit.pop() {
+                        if let Some(tgt) = manifest.targets.iter().find(|t2| t2.name == t) {
+                            for dep in &tgt.dependencies {
+                                if local_targets.contains(dep) && needed.insert(dep.clone()) {
+                                    to_visit.push(dep.clone());
+                                }
+                            }
+                        }
+                    }
+                    needed
+                };
+
+                if !local_targets.is_empty() {
+                    let mut in_degree: std::collections::HashMap<String, usize> =
+                        local_targets.iter().map(|n| (n.clone(), 0)).collect();
+                    let mut dependents: std::collections::HashMap<String, Vec<String>> =
+                        std::collections::HashMap::new();
+                    for target in &manifest.targets {
+                        if target.name == *pkg_name {
+                            continue;
+                        }
+                        for dep_name in &target.dependencies {
+                            if in_degree.contains_key(dep_name) {
+                                *in_degree.entry(target.name.clone()).or_insert(0) += 1;
+                                dependents
+                                    .entry(dep_name.clone())
+                                    .or_default()
+                                    .push(target.name.clone());
+                            }
+                        }
+                    }
+                    let mut queue: std::collections::VecDeque<String> = in_degree
+                        .iter()
+                        .filter(|(_, deg)| **deg == 0)
+                        .map(|(n, _)| n.clone())
+                        .collect();
+                    let mut ordered: Vec<String> = Vec::new();
+                    while let Some(name) = queue.pop_front() {
+                        ordered.push(name.clone());
+                        if let Some(deps) = dependents.get(&name) {
+                            for dep in deps.clone() {
+                                let deg = in_degree.entry(dep.clone()).or_insert(0);
+                                *deg -= 1;
+                                if *deg == 0 {
+                                    queue.push_back(dep);
+                                }
+                            }
+                        }
+                    }
+                    for target_name in &ordered {
+                        if !needed_local_targets.contains(target_name) {
+                            continue;
+                        }
+                        if packages.contains_key(target_name) {
+                            continue;
+                        }
+                        let target_pkg =
+                            Rc::new(RefCell::new(Package::new(target_name.clone())));
+                        packages.insert(target_name.clone(), target_pkg);
+                        let src_dir =
+                            Path::new(&proj_dir).join("Sources").join(target_name);
+                        if !src_dir.exists() {
+                            continue;
+                        }
+                        let mut target_stmts: Vec<Rc<RefCell<Statement>>> = Vec::new();
+                        if let Ok(entries) = std::fs::read_dir(&src_dir) {
+                            let mut truss_files: Vec<_> = entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    e.path()
+                                        .extension()
+                                        .is_some_and(|ext| ext == "truss")
+                                })
+                                .collect();
+                            truss_files.sort_by_key(|e| e.file_name());
+                            for entry in truss_files {
+                                let path = entry.path();
+                                let path_str = path.to_string_lossy().to_string();
+                                if let Ok(file_content) = std::fs::read_to_string(&path) {
+                                    let hash = compute_hash(&file_content);
+                                    if let Some(cached) = self.file_cache.get(&path_str) {
+                                        if cached.hash == hash {
+                                            for stmt in &cached.statements {
+                                                target_stmts.push(stmt.clone());
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    let f_rc = Rc::new(path_str.clone());
+                                    let f_engine =
+                                        Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+                                    let cs = CharStream::new(file_content, f_rc.clone());
+                                    let mut lx = Lexer::new(cs, f_engine.clone());
+                                    let toks = lx.parse();
+                                    if f_engine.borrow().has_errors() {
+                                        continue;
+                                    }
+                                    let mut pp =
+                                        Parser::new(f_rc, toks, f_engine.clone());
+                                    let prog = pp.parse();
+                                    if f_engine.borrow().has_errors() {
+                                        continue;
+                                    }
+                                    let stmts: Vec<Rc<RefCell<Statement>>> =
+                                        prog.statements;
+                                    for stmt in &stmts {
+                                        target_stmts.push(stmt.clone());
+                                    }
+                                    self.file_cache.insert(
+                                        path_str,
+                                        CachedFile {
+                                            hash,
+                                            statements: stmts,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        if target_stmts.is_empty() {
+                            continue;
+                        }
+                        let target_prog = Program {
+                            file: Rc::new(target_name.clone()),
+                            statements: target_stmts,
+                        };
+                        let t_engine =
+                            Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+                        let mut t_resolver = SymbolResolver::new(
+                            packages.clone(),
+                            target_name.clone(),
+                            t_engine.clone(),
+                        );
+                        let t_module =
+                            t_resolver.resolve(&target_prog, target_name.clone());
+                        let t_ty_engine =
+                            Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+                        let mut t_type_resolver = TypeResolver::new(
+                            packages.clone(),
+                            target_name.clone(),
+                            t_ty_engine.clone(),
+                        );
+                        if let Some(pkg) = packages.get(target_name) {
+                            if let Some(mod_ref) =
+                                pkg.borrow().modules.get(target_name)
+                            {
+                                t_type_resolver.resolve(&target_prog, mod_ref.clone());
+                            }
+                        }
+                        let _ = t_module;
+                    }
                 }
 
                 let source_files =
@@ -644,10 +828,10 @@ impl LanguageServer {
         };
         let mut symbol_resolver = SymbolResolver::new(
             packages.clone(),
-            "main".to_string(),
+            effective_pkg_name.clone(),
             analysis_engine.clone(),
         );
-        let module = symbol_resolver.resolve(&combined_prog, "main".to_string());
+        let module = symbol_resolver.resolve(&combined_prog, effective_pkg_name.clone());
         let mut analysis_diags =
             collect_diagnostics_filtered(&analysis_engine.borrow(), content, Some(file_path));
         if analysis_engine.borrow().has_errors() {
@@ -657,7 +841,7 @@ impl LanguageServer {
 
         let mut type_resolver = TypeResolver::new(
             packages.clone(),
-            "main".to_string(),
+            effective_pkg_name.clone(),
             analysis_engine.clone(),
         );
         type_resolver.resolve(&combined_prog, module.clone());
