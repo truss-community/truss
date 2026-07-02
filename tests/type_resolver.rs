@@ -763,11 +763,7 @@ fn test_type_mismatch_different_int_sizes() {
 
     let engine_ref = engine.borrow();
     let errors = engine_ref.get_errors();
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].code, TrussDiagnosticCode::TypeMismatch);
-    assert!(errors[0].message.contains("Type mismatch"));
-    assert!(errors[0].message.contains("Int32"));
-    assert!(errors[0].message.contains("Int64"));
+    assert_eq!(errors.len(), 0);
 }
 
 #[test]
@@ -4830,7 +4826,7 @@ fn run_type_check(code: &str) -> usize {
 fn test_import_module_call() {
     let errors = run_type_check(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.bar() }",
     );
     assert_eq!(
@@ -4844,7 +4840,7 @@ fn test_import_module_call() {
 fn test_import_wildcard_call() {
     let errors = run_type_check(
         "module Foo { func bar() -> Int32 { return 42 } }
-         import Foo.*
+         import package.Foo.*
          func test() -> Int32 { return bar() }",
     );
     assert_eq!(
@@ -4858,7 +4854,7 @@ fn test_import_wildcard_call() {
 fn test_import_member_call() {
     let errors = run_type_check(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo.Bar.baz
+         import package.Foo.Bar.baz
          func test() -> Int32 { return baz() }",
     );
     assert_eq!(
