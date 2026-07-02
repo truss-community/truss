@@ -1067,6 +1067,14 @@ impl Parser {
                                 right: Box::new(right),
                                 ty: None,
                             }
+                        } else if let Some(t) = self.peek()
+                            && SeparatorType::is_separator(&t, SeparatorType::CloseBracket)
+                        {
+                            self.index += 1;
+                            Expression::ArrayType {
+                                inner: Rc::new(RefCell::new(first_expr)),
+                                ty: None,
+                            }
                         } else {
                             let mut elements = Vec::new();
                             elements.push(Rc::new(RefCell::new(first_expr)));
