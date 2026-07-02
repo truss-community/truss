@@ -4519,7 +4519,7 @@ fn test_module_func_body_type_resolved() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
     resolver.resolve(&program, "test".to_string());
-    let module_id = krate.borrow().modules.get("foo").cloned().unwrap();
+    let module_id = krate.borrow().modules.get("test.foo").cloned().unwrap();
     let (packages, _) = truss::krate::single_package_map("test");
     let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
     type_resolver.resolve(&program, module_id);
@@ -4548,7 +4548,7 @@ fn test_module_return_type_resolved() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
     resolver.resolve(&program, "test".to_string());
-    let module_id = krate.borrow().modules.get("foo").cloned().unwrap();
+    let module_id = krate.borrow().modules.get("test.foo").cloned().unwrap();
     let (packages, _) = truss::krate::single_package_map("test");
     let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
     type_resolver.resolve(&program, module_id);
@@ -4577,7 +4577,7 @@ fn test_module_variable_decl_type_resolved() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
     resolver.resolve(&program, "test".to_string());
-    let module_id = krate.borrow().modules.get("foo").cloned().unwrap();
+    let module_id = krate.borrow().modules.get("test.foo").cloned().unwrap();
     let (packages, _) = truss::krate::single_package_map("test");
     let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
     type_resolver.resolve(&program, module_id);
@@ -4606,7 +4606,7 @@ fn test_nested_module_type_resolved() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
     resolver.resolve(&program, "test".to_string());
-    let module_id = krate.borrow().modules.get("foo.bar").cloned().unwrap();
+    let module_id = krate.borrow().modules.get("test.foo.bar").cloned().unwrap();
     let (packages, _) = truss::krate::single_package_map("test");
     let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
     type_resolver.resolve(&program, module_id);
@@ -4632,7 +4632,7 @@ fn test_empty_module_no_type_error() {
     let (packages, krate) = truss::krate::single_package_map("test");
     let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
     resolver.resolve(&program, "test".to_string());
-    let module_id = krate.borrow().modules.get("foo").cloned().unwrap();
+    let module_id = krate.borrow().modules.get("test.foo").cloned().unwrap();
     let (packages, _) = truss::krate::single_package_map("test");
     let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
     type_resolver.resolve(&program, module_id);
@@ -4872,7 +4872,7 @@ fn test_import_member_call() {
 fn test_import_nested_module_call() {
     let errors = run_type_check(
         "module Foo { module Bar { func baz() -> Int32 { return 99 } } }
-         import Foo
+         import package.Foo
          func test() -> Int32 { return Foo.Bar.baz() }",
     );
     assert_eq!(
@@ -4895,7 +4895,7 @@ fn test_import_module_not_found_error() {
 fn test_import_deep_nested_call() {
     let errors = run_type_check(
         "module A { module B { module C { func foo() -> Int32 { return 1 } } } }
-         import A
+         import package.A
          func test() -> Int32 { return A.B.C.foo() }",
     );
     assert_eq!(
@@ -7099,13 +7099,13 @@ fn test_array_literal_bool_elements() {
 
 #[test]
 fn test_array_literal_single_element() {
-    let errors = run_type_check("func test() { let a = [42] }");
+    let errors = run_type_check("func test() { let a = [42,] }");
     assert_eq!(errors, 0, "single-element array literal should type-check");
 }
 
 #[test]
 fn test_array_literal_nested() {
-    let errors = run_type_check("func test() { let a = [[1], [2]] }");
+    let errors = run_type_check("func test() { let a = [[1,], [2,]] }");
     assert_eq!(errors, 0, "nested array literal should type-check");
 }
 
