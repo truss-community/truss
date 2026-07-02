@@ -12057,7 +12057,7 @@ fn test_parse_array_literal_empty() {
 fn test_parse_array_literal_single_element() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("let x = [42]".to_string(), Rc::new("".to_string())),
+        CharStream::new("let x = [42,]".to_string(), Rc::new("".to_string())),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());

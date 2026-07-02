@@ -353,13 +353,13 @@ mod tests {
             name: "my-app",
             version: "0.1.0",
             targets: [
-                Target(name: "my-app")
+                Target(name: "my-app"),
             ],
             products: [
-                Product(name: "my-app", type: .Executable, targets: ["my-app"])
+                Product(name: "my-app", type: .Executable, targets: ["my-app",]),
             ],
             dependencies: [
-                Dependency(name: "http", url: "https://github.com/truss-lang/http", version: "0.1.0")
+                Dependency(name: "http", url: "https://github.com/truss-lang/http", version: "0.1.0"),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -403,7 +403,7 @@ mod tests {
                 Target(name: "my-app")
             ],
             products: [
-                Product(name: "my-app", type: .Executable, targets: ["my-app"])
+                Product(name: "my-app", type: .Executable, targets: ["my-app",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -416,10 +416,10 @@ mod tests {
             name: "my-app",
             version: "0.1.0",
             targets: [
-                Target(name: "my-app", dependencies: ["http", "json"])
+                Target(name: "my-app", dependencies: ["http", "json"]),
             ],
             products: [
-                Product(name: "my-app", type: .Executable, targets: ["my-app"])
+                Product(name: "my-app", type: .Executable, targets: ["my-app",]),
             ],
             dependencies: [
                 Dependency(name: "http", url: "https://github.com/truss-lang/http"),
@@ -437,8 +437,8 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-app",
             version: "0.1.0",
-            targets: [Target(name: "my-app")],
-            dependencies: [Dependency(name: "json")]
+            targets: [Target(name: "my-app"),],
+            dependencies: [Dependency(name: "json"),]
         )"#;
         let m = parse_project(code).expect("should parse");
         assert_eq!(m.dependencies[0].path.as_deref(), Some("../json"));
@@ -450,9 +450,9 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-app",
             version: "0.1.0",
-            targets: [Target(name: "my-app")],
+            targets: [Target(name: "my-app"),],
             products: [
-                Product(name: "my-app", type: .Executable, targets: ["my-app"])
+                Product(name: "my-app", type: .Executable, targets: ["my-app",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -467,9 +467,9 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-lib",
             version: "0.1.0",
-            targets: [Target(name: "my-lib")],
+            targets: [Target(name: "my-lib"),],
             products: [
-                Product(name: "my-lib", type: .DynamicLibrary, targets: ["my-lib"])
+                Product(name: "my-lib", type: .DynamicLibrary, targets: ["my-lib",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -484,9 +484,9 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-lib",
             version: "0.1.0",
-            targets: [Target(name: "my-lib")],
+            targets: [Target(name: "my-lib"),],
             products: [
-                Product(name: "my-lib", type: .StaticLibrary, targets: ["my-lib"])
+                Product(name: "my-lib", type: .StaticLibrary, targets: ["my-lib",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -501,9 +501,9 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-lib",
             version: "0.1.0",
-            targets: [Target(name: "my-lib")],
+            targets: [Target(name: "my-lib"),],
             products: [
-                Product(name: "my-lib", type: Library(.Dynamic), targets: ["my-lib"])
+                Product(name: "my-lib", type: Library(.Dynamic), targets: ["my-lib",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -516,9 +516,9 @@ mod tests {
         let code = r#"let project = Project(
             name: "my-app",
             version: "0.1.0",
-            targets: [Target(name: "my-app")],
+            targets: [Target(name: "my-app"),],
             products: [
-                Product(name: "my-app", targets: ["my-app"])
+                Product(name: "my-app", targets: ["my-app",]),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -536,8 +536,8 @@ mod tests {
                 Target(name: "my-cli")
             ],
             products: [
-                Product(name: "my-lib", type: .StaticLibrary, targets: ["my-lib"]),
-                Product(name: "my-cli", type: .Executable, targets: ["my-cli"])
+                Product(name: "my-lib", type: .StaticLibrary, targets: ["my-lib",]),
+                Product(name: "my-cli", type: .Executable, targets: ["my-cli",])
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
