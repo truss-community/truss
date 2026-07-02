@@ -1288,7 +1288,11 @@ impl SymbolResolver {
                         pkg.borrow().modules.get(mp).cloned()
                     };
                 if let Some(members) = selective_members {
-                    let module_path = path.join(".");
+                    let module_path = if *is_current_package {
+                        format!("{}.{}", self.current_package, path.join("."))
+                    } else {
+                        path.join(".")
+                    };
                     let target_pkg = if *is_current_package {
                         self.packages.get(&self.current_package).cloned()
                     } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
@@ -1557,7 +1561,11 @@ impl SymbolResolver {
                 } else {
                     match kind {
                         ImportKind::Module => {
-                            let module_path = path.join(".");
+                            let module_path = if *is_current_package {
+                                format!("{}.{}", self.current_package, path.join("."))
+                            } else {
+                                path.join(".")
+                            };
                             let target_pkg = if *is_current_package {
                                 self.packages.get(&self.current_package).cloned()
                             } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
@@ -1616,7 +1624,11 @@ impl SymbolResolver {
                         }
                         ImportKind::Member => {
                             let member_name = path.last().unwrap().clone();
-                            let module_path = path[..path.len() - 1].join(".");
+                            let module_path = if *is_current_package {
+                                format!("{}.{}", self.current_package, path[..path.len() - 1].join("."))
+                            } else {
+                                path[..path.len() - 1].join(".")
+                            };
                             let target_pkg = if *is_current_package {
                                 self.packages.get(&self.current_package).cloned()
                             } else if path.len() >= 2 && self.packages.contains_key(&path[0]) {
@@ -1643,7 +1655,11 @@ impl SymbolResolver {
                             }
                         }
                         ImportKind::Wildcard => {
-                            let module_path = path.join(".");
+                            let module_path = if *is_current_package {
+                                format!("{}.{}", self.current_package, path.join("."))
+                            } else {
+                                path.join(".")
+                            };
                             let target_pkg = if *is_current_package {
                                 self.packages.get(&self.current_package).cloned()
                             } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
