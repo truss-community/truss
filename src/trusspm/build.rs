@@ -167,6 +167,165 @@ impl BuildOrchestrator {
             }
         }
 
+        {
+            let local_targets: Vec<String> = self
+                .manifest
+                .targets
+                .iter()
+                .filter(|t| t.name != self.manifest.name)
+                .map(|t| t.name.clone())
+                .collect();
+
+            let mut in_degree: std::collections::HashMap<String, usize> =
+                local_targets.iter().map(|n| (n.clone(), 0)).collect();
+            let mut dependents: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+
+            for target in &self.manifest.targets {
+                if target.name == self.manifest.name {
+                    continue;
+                }
+                for dep_name in &target.dependencies {
+                    if in_degree.contains_key(dep_name) {
+                        *in_degree.entry(target.name.clone()).or_insert(0) += 1;
+                        dependents
+                            .entry(dep_name.clone())
+                            .or_default()
+                            .push(target.name.clone());
+                    }
+                }
+            }
+
+            let mut queue: std::collections::VecDeque<String> = in_degree
+                .iter()
+                .filter(|(_, deg)| **deg == 0)
+                .map(|(n, _)| n.clone())
+                .collect();
+
+            let mut ordered: Vec<String> = Vec::new();
+            while let Some(name) = queue.pop_front() {
+                ordered.push(name.clone());
+                if let Some(deps) = dependents.get(&name) {
+                    for dep in deps.clone() {
+                        let deg = in_degree.entry(dep.clone()).or_insert(0);
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(dep);
+                        }
+                    }
+                }
+            }
+
+            if ordered.len() != local_targets.len() {
+                eprintln!("error: circular dependency detected among local targets");
+                return;
+            }
+
+            for target_name in &ordered {
+                let src_dir = project_path.join("Sources").join(target_name);
+                if !src_dir.exists() {
+                    continue;
+                }
+                let mut file_stmts: Vec<Rc<RefCell<Statement>>> = Vec::new();
+                let mut entries: Vec<_> = match std::fs::read_dir(&src_dir) {
+                    Ok(entries) => entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                entries.sort_by_key(|e| e.file_name());
+                let files: Vec<_> = entries.into_iter().map(|e| e.path()).collect();
+                for file in &files {
+                    let path_str = file.to_string_lossy().to_string();
+                    if let Ok(meta) = std::fs::metadata(file) {
+                        if let Ok(mtime) = meta.modified() {
+                            if let Some(cached) = self.file_cache.get(&path_str) {
+                                if cached.mtime == mtime {
+                                    for stmt in &cached.statements {
+                                        file_stmts.push(stmt.clone());
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    let content = match std::fs::read_to_string(file) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    let file_rc = Rc::new(path_str.clone());
+                    let char_stream = CharStream::new(content, file_rc.clone());
+                    let mut lexer = Lexer::new(char_stream, self.engine.clone());
+                    let tokens = lexer.parse();
+                    if self.engine.borrow().has_errors() {
+                        let formatted =
+                            duck_diagnostic::format_all_smart(&*self.engine.borrow(), false);
+                        if !formatted.is_empty() {
+                            eprintln!("{}", formatted);
+                        }
+                        return;
+                    }
+                    let mut parser = Parser::new(file_rc, tokens, self.engine.clone());
+                    let program = parser.parse();
+                    if self.engine.borrow().has_errors() {
+                        let formatted =
+                            duck_diagnostic::format_all_smart(&*self.engine.borrow(), false);
+                        if !formatted.is_empty() {
+                            eprintln!("{}", formatted);
+                        }
+                        return;
+                    }
+                    let stmts = program.statements;
+                    if let Ok(meta) = std::fs::metadata(file) {
+                        if let Ok(mtime) = meta.modified() {
+                            self.file_cache.insert(
+                                path_str,
+                                CachedBuildFile {
+                                    mtime,
+                                    statements: stmts.clone(),
+                                },
+                            );
+                        }
+                    }
+                    for stmt in stmts {
+                        file_stmts.push(stmt);
+                    }
+                }
+                if file_stmts.is_empty() {
+                    continue;
+                }
+                let dep_prog = Program {
+                    file: Rc::new(target_name.clone()),
+                    statements: file_stmts.clone(),
+                };
+                let mut resolver = SymbolResolver::new(
+                    self.packages.clone(),
+                    target_name.clone(),
+                    self.engine.clone(),
+                );
+                let module = resolver.resolve(&dep_prog, target_name.clone());
+                let dummy_program = Program {
+                    file: Rc::new(String::new()),
+                    statements: Vec::new(),
+                };
+                let mut type_resolver = TypeResolver::new(
+                    self.packages.clone(),
+                    target_name.clone(),
+                    self.engine.clone(),
+                );
+                type_resolver.resolve(&dummy_program, module);
+                if self.engine.borrow().has_errors() {
+                    let formatted =
+                        duck_diagnostic::format_all_smart(&*self.engine.borrow(), false);
+                    if !formatted.is_empty() {
+                        eprintln!("{}", formatted);
+                    }
+                    return;
+                }
+            }
+        }
+
         let pkgs_snapshot: Vec<String> = self.packages.keys().cloned().collect();
 
         for pkg_name in &pkgs_snapshot {

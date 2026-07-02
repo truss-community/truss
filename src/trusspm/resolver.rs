@@ -30,6 +30,20 @@ impl DependencyResolver {
             root_module.borrow_mut().scope = Some(scope);
         }
 
+        for target in &manifest.targets {
+            if target.name == manifest.name { continue; }
+            if packages.contains_key(&target.name) { continue; }
+            let pkg = Rc::new(RefCell::new(Package::new(target.name.clone())));
+            let src_dir = project_dir.join("Sources").join(&target.name);
+            if src_dir.exists() {
+                let root_module = Rc::new(RefCell::new(Module::new(target.name.clone())));
+                pkg.borrow_mut().modules.insert(target.name.clone(), root_module.clone());
+                let scope = Rc::new(RefCell::new(crate::scope::Scope::new(None)));
+                root_module.borrow_mut().scope = Some(scope);
+            }
+            packages.insert(target.name.clone(), pkg);
+        }
+
         for dep in &manifest.dependencies {
             let dep_pkg = Self::resolve_dependency(dep, project_dir);
             packages.insert(dep.name.clone(), Rc::new(RefCell::new(dep_pkg)));
