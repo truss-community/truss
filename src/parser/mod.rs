@@ -995,6 +995,7 @@ impl Parser {
                     let result = if let Some(t) = self.peek()
                         && !SeparatorType::is_separator(&t, SeparatorType::CloseBracket)
                     {
+                        let saved_index = self.index;
                         let first_expr = self.parse_expression()?;
 
                         if let Some(t) = self.peek()
@@ -1070,9 +1071,11 @@ impl Parser {
                         } else if let Some(t) = self.peek()
                             && SeparatorType::is_separator(&t, SeparatorType::CloseBracket)
                         {
+                            self.index = saved_index;
+                            let type_inner = self.parse_type_expression()?;
                             self.index += 1;
                             Expression::ArrayType {
-                                inner: Rc::new(RefCell::new(first_expr)),
+                                inner: Rc::new(RefCell::new(type_inner)),
                                 ty: None,
                             }
                         } else {
