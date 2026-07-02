@@ -294,11 +294,10 @@ impl PartialEq for Symbol {
                     is_override: bo,
                     ownership: b_own,
                 },
-            ) => a == b && ap == bp && ad == bd && av == bv && af == bf && ao == bo && a_own == b_own,
-            (
-                Self::ClassMethod { name: a, .. },
-                Self::ClassMethod { name: b, .. },
-            ) => a == b,
+            ) => {
+                a == b && ap == bp && ad == bd && av == bv && af == bf && ao == bo && a_own == b_own
+            }
+            (Self::ClassMethod { name: a, .. }, Self::ClassMethod { name: b, .. }) => a == b,
             (Self::ClassSubscript { name: a, .. }, Self::ClassSubscript { name: b, .. }) => a == b,
             (
                 Self::Enum {
@@ -362,14 +361,7 @@ impl PartialEq for Symbol {
                     is_any_object_protocol: ibp,
                     package: _,
                 },
-            ) => {
-                a == b
-                    && Rc::ptr_eq(ad, bd)
-                    && am == bm
-                    && ap == bp
-                    && as_ == bs_
-                    && iap == ibp
-            }
+            ) => a == b && Rc::ptr_eq(ad, bd) && am == bm && ap == bp && as_ == bs_ && iap == ibp,
             (
                 Self::ProtocolMethod {
                     name: a,

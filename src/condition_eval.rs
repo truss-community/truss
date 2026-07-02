@@ -109,11 +109,7 @@ pub fn predefined_symbols(file: &str) -> DefinedSymbols {
     symbols
 }
 
-fn evaluate_condition(
-    cond: &Condition,
-    triple: &TargetTriple,
-    symbols: &DefinedSymbols,
-) -> bool {
+fn evaluate_condition(cond: &Condition, triple: &TargetTriple, symbols: &DefinedSymbols) -> bool {
     match cond {
         Condition::Bool(b) => *b,
         Condition::Os(token) => token.value == triple.os,

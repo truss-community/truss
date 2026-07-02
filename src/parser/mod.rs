@@ -2760,7 +2760,9 @@ impl Parser {
 
     fn try_parse_operator_fixity(&mut self) -> Option<OperatorDeclFixity> {
         let token = self.peek()?;
-        let TokenType::Keyword { keyword } = &token.ty else { return None; };
+        let TokenType::Keyword { keyword } = &token.ty else {
+            return None;
+        };
         let fixity = match keyword {
             KeywordType::Prefix => OperatorDeclFixity::Prefix,
             KeywordType::Postfix => OperatorDeclFixity::Postfix,
@@ -2775,7 +2777,11 @@ impl Parser {
         Some(fixity)
     }
 
-    fn parse_operator_decl_body(&mut self, token: Token, fixity: OperatorDeclFixity) -> Result<Statement, ()> {
+    fn parse_operator_decl_body(
+        &mut self,
+        token: Token,
+        fixity: OperatorDeclFixity,
+    ) -> Result<Statement, ()> {
         let symbol = if let Some(t) = self.peek()
             && matches!(t.ty, TokenType::Identifier)
         {
@@ -4195,7 +4201,8 @@ impl Parser {
                 {
                     self.index += 1;
                     let type_expr = self.parse_type_expression()?;
-                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable") {
+                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable")
+                    {
                         self.emit_error(
                             TrussDiagnosticCode::ParserError,
                             "Only Copyable can be suppressed with ~",
@@ -4409,7 +4416,8 @@ impl Parser {
                 {
                     self.index += 1;
                     let type_expr = self.parse_type_expression()?;
-                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable") {
+                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable")
+                    {
                         self.emit_error(
                             TrussDiagnosticCode::ParserError,
                             "Only Copyable can be suppressed with ~",
@@ -4610,7 +4618,12 @@ impl Parser {
                 break;
             }
             first = false;
-            let is_self = matches!(name_token.ty, TokenType::Keyword { keyword: KeywordType::SelfKw });
+            let is_self = matches!(
+                name_token.ty,
+                TokenType::Keyword {
+                    keyword: KeywordType::SelfKw
+                }
+            );
             if !is_self && !matches!(name_token.ty, TokenType::Identifier) {
                 self.emit_error(
                     TrussDiagnosticCode::ExpectedIdentifier,
@@ -4656,7 +4669,10 @@ impl Parser {
                             if !matches!(next.ty, TokenType::Identifier) {
                                 self.emit_error(
                                     TrussDiagnosticCode::ExpectedIdentifier,
-                                    format!("Expected identifier after '.' but found '{}'", next.value),
+                                    format!(
+                                        "Expected identifier after '.' but found '{}'",
+                                        next.value
+                                    ),
                                     &next,
                                 );
                                 return Err(());
@@ -4706,7 +4722,11 @@ impl Parser {
             } else {
                 SelectiveAlias::Direct
             };
-            members.push(SelectiveMember { name, alias, members: members_opt });
+            members.push(SelectiveMember {
+                name,
+                alias,
+                members: members_opt,
+            });
             match self.peek() {
                 Some(ref comma) if SeparatorType::is_separator(comma, SeparatorType::Comma) => {
                     self.index += 1;
@@ -4990,7 +5010,8 @@ impl Parser {
                 {
                     self.index += 1;
                     let type_expr = self.parse_type_expression()?;
-                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable") {
+                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable")
+                    {
                         self.emit_error(
                             TrussDiagnosticCode::ParserError,
                             "Only Copyable can be suppressed with ~",
@@ -5199,7 +5220,8 @@ impl Parser {
             {
                 self.index += 1;
                 let type_expr = self.parse_type_expression()?;
-                if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable") {
+                if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable")
+                {
                     self.emit_error(
                         TrussDiagnosticCode::ParserError,
                         "Only Copyable can be suppressed with ~",
@@ -5225,7 +5247,8 @@ impl Parser {
                 {
                     self.index += 1;
                     let type_expr = self.parse_type_expression()?;
-                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable") {
+                    if !matches!(&type_expr, Expression::Type { name, .. } if name.value == "Copyable")
+                    {
                         self.emit_error(
                             TrussDiagnosticCode::ParserError,
                             "Only Copyable can be suppressed with ~",
@@ -5478,7 +5501,9 @@ impl Parser {
                         if !get && !set {
                             get = true;
                         }
-                        let is_static = member_modifiers.iter().any(|m| m.ty == ModifierType::Static);
+                        let is_static = member_modifiers
+                            .iter()
+                            .any(|m| m.ty == ModifierType::Static);
                         if is_static {
                             members.push(ProtocolMember::StaticVar {
                                 modifiers: member_modifiers,
@@ -5802,9 +5827,7 @@ impl Parser {
                             default_accessors,
                         });
                     }
-                    TokenType::Keyword { keyword }
-                        if keyword == KeywordType::Init =>
-                    {
+                    TokenType::Keyword { keyword } if keyword == KeywordType::Init => {
                         let init_token = self.next().unwrap();
                         let Some(open) = self.next() else {
                             self.emit_error(
@@ -5859,7 +5882,10 @@ impl Parser {
                                 if TokenType::Identifier != second.ty {
                                     self.emit_error(
                                         TrussDiagnosticCode::ExpectedIdentifier,
-                                        format!("Expected parameter name but found '{}'", second.value),
+                                        format!(
+                                            "Expected parameter name but found '{}'",
+                                            second.value
+                                        ),
                                         &second,
                                     );
                                     return Err(());
@@ -5919,7 +5945,10 @@ impl Parser {
                         {
                             self.index += 1;
                             if let Some(open_paren) = self.peek()
-                                && SeparatorType::is_separator(&open_paren, SeparatorType::OpenParen)
+                                && SeparatorType::is_separator(
+                                    &open_paren,
+                                    SeparatorType::OpenParen,
+                                )
                             {
                                 self.index += 1;
                                 let mut types = Vec::new();
@@ -5942,7 +5971,10 @@ impl Parser {
                                     );
                                     return Err(());
                                 };
-                                if !SeparatorType::is_separator(&close_paren, SeparatorType::CloseParen) {
+                                if !SeparatorType::is_separator(
+                                    &close_paren,
+                                    SeparatorType::CloseParen,
+                                ) {
                                     self.emit_error(
                                         TrussDiagnosticCode::MissingSeparator,
                                         format!("Expected ')' but found '{}'", close_paren.value),

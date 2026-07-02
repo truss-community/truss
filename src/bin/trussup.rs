@@ -153,7 +153,13 @@ fn install_from_remote(toolchain_dir: &PathBuf) {
 
     println!("Cloning truss repository...");
     let clone_status = Command::new("git")
-        .args(["clone", "--depth", "1", repo_url, &temp_dir.to_string_lossy()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            repo_url,
+            &temp_dir.to_string_lossy(),
+        ])
         .status();
     match clone_status {
         Ok(s) if s.success() => println!("Repository cloned successfully"),
@@ -169,7 +175,18 @@ fn install_from_remote(toolchain_dir: &PathBuf) {
 
     println!("Building truss toolchain (release mode)...");
     let build_status = Command::new("cargo")
-        .args(["build", "--release", "--bin", "truss", "--bin", "trussc", "--bin", "truss-lsp", "--bin", "trussup"])
+        .args([
+            "build",
+            "--release",
+            "--bin",
+            "truss",
+            "--bin",
+            "trussc",
+            "--bin",
+            "truss-lsp",
+            "--bin",
+            "trussup",
+        ])
         .current_dir(&temp_dir)
         .status();
     match build_status {

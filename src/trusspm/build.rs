@@ -7,7 +7,7 @@ struct CachedBuildFile {
 
 use crate::{
     ast::{node::Program, statement::Statement},
-    condition_eval::{flatten_program, predefined_symbols, TargetTriple},
+    condition_eval::{TargetTriple, flatten_program, predefined_symbols},
     diag::TrussDiagnosticEngine,
     ir_gen::{IRGenerator, IRModules, emit},
     krate::Package,
@@ -629,8 +629,8 @@ impl BuildOrchestrator {
                     }
                 }
 
-                let file_ir_gen = IRGenerator::new(&context, ir_engine.clone())
-                    .with_namespace(&pkg_name, "");
+                let file_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
                 let file_modules_result =
                     file_ir_gen.generate_with_stdlib(&program, &stdlib_stmts, main_scope.clone());
                 if stdlib_to_emit.is_none() {
@@ -651,8 +651,8 @@ impl BuildOrchestrator {
             }
 
             let combined_module = if file_modules.is_empty() {
-                let single_ir_gen = IRGenerator::new(&context, ir_engine.clone())
-                    .with_namespace(&pkg_name, "");
+                let single_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
                 let modules = single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
                 if ir_engine.borrow().has_errors() {
                     let formatted = duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);

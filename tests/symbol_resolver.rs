@@ -4908,7 +4908,7 @@ fn test_array_literal_resolves_variable() {
 
 #[test]
 fn test_array_literal_undefined_variable() {
-    let (_, engine, _) = run_resolver("func test() { let a = [undefinedVar] }");
+    let (_, engine, _) = run_resolver("func test() { let a = [undefinedVar,] }");
     assert!(
         engine.borrow().has_errors(),
         "Undefined variable in array literal should produce error"

@@ -206,11 +206,8 @@ fn main() {
             SymbolResolver::new(packages.clone(), "Truss".to_string(), engine.clone());
         let std_module = std_resolver.resolve(&std_prog, "Truss".to_string());
 
-        let mut std_type_resolver = TypeResolver::new(
-            packages.clone(),
-            "Truss".to_string(),
-            engine.clone(),
-        );
+        let mut std_type_resolver =
+            TypeResolver::new(packages.clone(), "Truss".to_string(), engine.clone());
         std_type_resolver.resolve(&std_prog, std_module);
     }
 

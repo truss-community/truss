@@ -9,7 +9,7 @@ use std::{cell::RefCell, path::Path, rc::Rc};
 
 use crate::{
     ast::statement::Statement,
-    condition_eval::{flatten_program, predefined_symbols, TargetTriple},
+    condition_eval::{TargetTriple, flatten_program, predefined_symbols},
     diag::TrussDiagnosticEngine,
     lexer::{CharStream, Lexer},
     parser::Parser,

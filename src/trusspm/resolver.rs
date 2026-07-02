@@ -31,13 +31,19 @@ impl DependencyResolver {
         }
 
         for target in &manifest.targets {
-            if target.name == manifest.name { continue; }
-            if packages.contains_key(&target.name) { continue; }
+            if target.name == manifest.name {
+                continue;
+            }
+            if packages.contains_key(&target.name) {
+                continue;
+            }
             let pkg = Rc::new(RefCell::new(Package::new(target.name.clone())));
             let src_dir = project_dir.join("Sources").join(&target.name);
             if src_dir.exists() {
                 let root_module = Rc::new(RefCell::new(Module::new(target.name.clone())));
-                pkg.borrow_mut().modules.insert(target.name.clone(), root_module.clone());
+                pkg.borrow_mut()
+                    .modules
+                    .insert(target.name.clone(), root_module.clone());
                 let scope = Rc::new(RefCell::new(crate::scope::Scope::new(None)));
                 root_module.borrow_mut().scope = Some(scope);
             }
@@ -112,10 +118,17 @@ impl DependencyResolver {
         files
     }
 
-    pub fn dependency_source_dir(dep: &ManifestDependency, project_dir: &Path) -> std::path::PathBuf {
+    pub fn dependency_source_dir(
+        dep: &ManifestDependency,
+        project_dir: &Path,
+    ) -> std::path::PathBuf {
         if dep.url.is_some() {
             // Remote dependency: cloned to .truss-cache/<name>/Sources/<name>/
-            project_dir.join(".truss-cache").join(&dep.name).join("Sources").join(&dep.name)
+            project_dir
+                .join(".truss-cache")
+                .join(&dep.name)
+                .join("Sources")
+                .join(&dep.name)
         } else {
             // Local dependency: relative to project dir at <path>/Sources/<name>/
             let default_path = format!("../{}", dep.name);

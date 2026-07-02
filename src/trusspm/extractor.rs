@@ -385,7 +385,7 @@ mod tests {
             name: "my-app",
             version: "0.1.0",
             targets: [
-                Target(name: "my-app")
+                Target(name: "my-app"),
             ]
         )"#;
         let m = parse_project(code).expect("should parse");
@@ -400,7 +400,7 @@ mod tests {
             name: "my-app",
             version: "0.1.0",
             targets: [
-                Target(name: "my-app")
+                Target(name: "my-app"),
             ],
             products: [
                 Product(name: "my-app", type: .Executable, targets: ["my-app",]),

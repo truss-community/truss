@@ -2538,7 +2538,7 @@ fn test_irgen_class_computed_property_getter_in_vtable() {
     let llvm_ir = module.print_to_string().to_string();
 
     assert!(
-llvm_ir.contains("_T$test$$__vtable$ViewModel"),
+        llvm_ir.contains("_T$test$$__vtable$ViewModel"),
         "vtable type should exist:\n{}",
         llvm_ir
     );
@@ -7439,9 +7439,7 @@ fn test_irgen_math_module_symbol_mangling() {
 
 #[test]
 fn test_irgen_nested_module_symbol_mangling() {
-    let (llvm_ir, engine) = run_ir_gen(
-        "module A { module B { func foo() -> Int32 { 42 } } }",
-    );
+    let (llvm_ir, engine) = run_ir_gen("module A { module B { func foo() -> Int32 { 42 } } }");
     assert_eq!(engine.borrow().get_errors().len(), 0, "no errors expected");
     assert!(
         llvm_ir.contains("$A$B$foo$"),

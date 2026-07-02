@@ -561,11 +561,9 @@ impl LanguageServer {
                         if packages.contains_key(target_name) {
                             continue;
                         }
-                        let target_pkg =
-                            Rc::new(RefCell::new(Package::new(target_name.clone())));
+                        let target_pkg = Rc::new(RefCell::new(Package::new(target_name.clone())));
                         packages.insert(target_name.clone(), target_pkg);
-                        let src_dir =
-                            Path::new(&proj_dir).join("Sources").join(target_name);
+                        let src_dir = Path::new(&proj_dir).join("Sources").join(target_name);
                         if !src_dir.exists() {
                             continue;
                         }
@@ -573,11 +571,7 @@ impl LanguageServer {
                         if let Ok(entries) = std::fs::read_dir(&src_dir) {
                             let mut truss_files: Vec<_> = entries
                                 .filter_map(|e| e.ok())
-                                .filter(|e| {
-                                    e.path()
-                                        .extension()
-                                        .is_some_and(|ext| ext == "truss")
-                                })
+                                .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
                                 .collect();
                             truss_files.sort_by_key(|e| e.file_name());
                             for entry in truss_files {
@@ -602,14 +596,12 @@ impl LanguageServer {
                                     if f_engine.borrow().has_errors() {
                                         continue;
                                     }
-                                    let mut pp =
-                                        Parser::new(f_rc, toks, f_engine.clone());
+                                    let mut pp = Parser::new(f_rc, toks, f_engine.clone());
                                     let prog = pp.parse();
                                     if f_engine.borrow().has_errors() {
                                         continue;
                                     }
-                                    let stmts: Vec<Rc<RefCell<Statement>>> =
-                                        prog.statements;
+                                    let stmts: Vec<Rc<RefCell<Statement>>> = prog.statements;
                                     for stmt in &stmts {
                                         target_stmts.push(stmt.clone());
                                     }
@@ -630,26 +622,21 @@ impl LanguageServer {
                             file: Rc::new(target_name.clone()),
                             statements: target_stmts,
                         };
-                        let t_engine =
-                            Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+                        let t_engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
                         let mut t_resolver = SymbolResolver::new(
                             packages.clone(),
                             target_name.clone(),
                             t_engine.clone(),
                         );
-                        let t_module =
-                            t_resolver.resolve(&target_prog, target_name.clone());
-                        let t_ty_engine =
-                            Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+                        let t_module = t_resolver.resolve(&target_prog, target_name.clone());
+                        let t_ty_engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
                         let mut t_type_resolver = TypeResolver::new(
                             packages.clone(),
                             target_name.clone(),
                             t_ty_engine.clone(),
                         );
                         if let Some(pkg) = packages.get(target_name) {
-                            if let Some(mod_ref) =
-                                pkg.borrow().modules.get(target_name)
-                            {
+                            if let Some(mod_ref) = pkg.borrow().modules.get(target_name) {
                                 t_type_resolver.resolve(&target_prog, mod_ref.clone());
                             }
                         }
