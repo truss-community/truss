@@ -28,7 +28,7 @@ pub struct BuildOrchestrator {
     engine: Rc<RefCell<TrussDiagnosticEngine>>,
     pub output_path: Option<String>,
     file_cache: HashMap<String, CachedBuildFile>,
-    local_target_stmts: Vec<Rc<RefCell<Statement>>>,
+    local_target_stmts: Vec<(String, Vec<Rc<RefCell<Statement>>>)>,
 }
 
 impl BuildOrchestrator {
@@ -321,9 +321,7 @@ impl BuildOrchestrator {
                     }
                     return;
                 }
-                for stmt in &file_stmts {
-                    self.local_target_stmts.push(stmt.clone());
-                }
+                self.local_target_stmts.push((target_name.clone(), file_stmts.clone()));
             }
         }
 
@@ -566,9 +564,26 @@ impl BuildOrchestrator {
                 }
             };
 
+            let mut local_modules: Vec<(String, inkwell::module::Module<'_>)> = Vec::new();
+            let mut stdlib_to_emit: Option<Rc<inkwell::module::Module<'_>>> = None;
+
+            for (target_name, target_stmts) in &self.local_target_stmts {
+                let target_prog = Program {
+                    file: Rc::new(target_name.clone()),
+                    statements: target_stmts.clone(),
+                };
+                let target_ir_gen = IRGenerator::new(&context, ir_engine.clone())
+                    .with_namespace(target_name, "");
+                let result =
+                    target_ir_gen.generate_with_stdlib(&target_prog, &stdlib_stmts, main_scope.clone());
+                if stdlib_to_emit.is_none() {
+                    stdlib_to_emit = result.stdlib.clone();
+                }
+                local_modules.push((target_name.clone(), (*result.main).clone()));
+            }
+
             let files = DependencyResolver::discover_source_files(&pkg_name, project_path);
             let mut file_modules: Vec<(String, inkwell::module::Module<'_>)> = Vec::new();
-            let mut stdlib_to_emit: Option<Rc<inkwell::module::Module<'_>>> = None;
 
             for file in &files {
                 let path_str = file.to_string_lossy().to_string();
@@ -632,7 +647,6 @@ impl BuildOrchestrator {
                             }
                         }
                     }
-                    program.statements.extend(self.local_target_stmts.iter().cloned());
                 }
 
                 let file_ir_gen =
@@ -656,81 +670,112 @@ impl BuildOrchestrator {
                 return;
             }
 
-            let combined_module = if file_modules.is_empty() {
-                let single_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
-                let modules = single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
-                if ir_engine.borrow().has_errors() {
-                    let formatted = duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);
-                    if !formatted.is_empty() {
-                        eprintln!("{}", formatted);
+            let combined_file_module: Option<inkwell::module::Module<'_>> =
+                if file_modules.is_empty() {
+                    let single_ir_gen = IRGenerator::new(&context, ir_engine.clone())
+                        .with_namespace(&pkg_name, "");
+                    let modules =
+                        single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
+                    if ir_engine.borrow().has_errors() {
+                        let formatted =
+                            duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);
+                        if !formatted.is_empty() {
+                            eprintln!("{}", formatted);
+                        }
+                        return;
                     }
-                    return;
-                }
-                modules
-            } else if file_modules.len() == 1 {
-                IRModules {
-                    main: Rc::new(file_modules[0].1.clone()),
-                    stdlib: stdlib_to_emit,
-                }
-            } else {
-                let (_, target_module) = file_modules.remove(0);
-                for (_, module) in file_modules {
-                    if let Err(e) = target_module.link_in_module(module) {
-                        eprintln!("warning: failed to link module: {}", e);
+                    if stdlib_to_emit.is_none() {
+                        stdlib_to_emit = modules.stdlib.clone();
                     }
-                }
-                IRModules {
-                    main: Rc::new(target_module),
-                    stdlib: stdlib_to_emit,
-                }
-            };
+                    Some((*modules.main).clone())
+                } else if file_modules.len() == 1 {
+                    Some(file_modules.remove(0).1)
+                } else {
+                    let (_, target_module) = file_modules.remove(0);
+                    for (_, module) in file_modules {
+                        if let Err(e) = target_module.link_in_module(module) {
+                            eprintln!("warning: failed to link module: {}", e);
+                        }
+                    }
+                    Some(target_module)
+                };
 
             let triple = TargetTriple::host().to_triple_string();
-
-            let (kind, product_name) = self
-                .manifest
-                .products
-                .first()
-                .map(|p| (p.product_type, p.name.clone()))
-                .unwrap_or((ProductType::Executable, self.manifest.name.clone()));
-
             let build_dir = project_path.join("Build");
             std::fs::create_dir_all(&build_dir).ok();
 
-            let output_name = match kind {
-                ProductType::Executable => {
-                    if cfg!(target_os = "windows") {
-                        format!("{}.exe", product_name)
-                    } else {
-                        product_name.clone()
+            for product in &self.manifest.products.clone() {
+                let kind = product.product_type;
+                let product_name = product.name.clone();
+
+                let mut product_module_list: Vec<inkwell::module::Module<'_>> = Vec::new();
+
+                for (target_name, module) in &local_modules {
+                    if product.targets.contains(target_name) {
+                        product_module_list.push(module.clone());
                     }
                 }
-                ProductType::Library(LibraryType::Dynamic) => {
-                    format!("lib{}.so", product_name)
+                if product.targets.contains(&pkg_name) {
+                    if let Some(ref fm) = combined_file_module {
+                        product_module_list.push(fm.clone());
+                    }
                 }
-                ProductType::Library(LibraryType::Static) => format!("lib{}.a", product_name),
-            };
-            let output_path = build_dir.join(&output_name);
-            let output_str = output_path.to_string_lossy().to_string();
 
-            match emit::emit_output(
-                &combined_module.main,
-                combined_module.stdlib.as_deref(),
-                &triple,
-                &output_str,
-                kind,
-            ) {
-                Ok(()) => {
-                    self.output_path = Some(output_str);
-                    println!("Build succeeded: {}", output_path.display());
+                if product_module_list.is_empty() {
+                    continue;
                 }
-                Err(e) => {
-                    eprintln!("Emit failed: {}", e);
-                    self.engine.borrow_mut().emit(crate::diag::new_diagnostic(
-                        crate::diag::TrussDiagnosticCode::IRError,
-                        format!("Failed to emit output: {}", e),
-                    ));
+
+                let combined = if product_module_list.len() == 1 {
+                    product_module_list.remove(0)
+                } else {
+                    let mut it = product_module_list.into_iter();
+                    let first = it.next().unwrap();
+                    for module in it {
+                        if let Err(e) = first.link_in_module(module) {
+                            eprintln!("warning: failed to link module: {}", e);
+                        }
+                    }
+                    first
+                };
+
+                let output_name = match kind {
+                    ProductType::Executable => {
+                        if cfg!(target_os = "windows") {
+                            format!("{}.exe", product_name)
+                        } else {
+                            product_name.clone()
+                        }
+                    }
+                    ProductType::Library(LibraryType::Dynamic) => {
+                        format!("lib{}.so", product_name)
+                    }
+                    ProductType::Library(LibraryType::Static) => {
+                        format!("lib{}.a", product_name)
+                    }
+                };
+                let output_path = build_dir.join(&output_name);
+                let output_str = output_path.to_string_lossy().to_string();
+
+                match emit::emit_output(
+                    &combined,
+                    stdlib_to_emit.as_deref(),
+                    &triple,
+                    &output_str,
+                    kind,
+                ) {
+                    Ok(()) => {
+                        if self.output_path.is_none() {
+                            self.output_path = Some(output_str);
+                        }
+                        println!("Build succeeded: {}", output_path.display());
+                    }
+                    Err(e) => {
+                        eprintln!("Emit failed: {}", e);
+                        self.engine.borrow_mut().emit(crate::diag::new_diagnostic(
+                            crate::diag::TrussDiagnosticCode::IRError,
+                            format!("Failed to emit output: {}", e),
+                        ));
+                    }
                 }
             }
         }
