@@ -2030,6 +2030,7 @@ impl TypeResolver {
                 else_body,
                 ..
             } => {
+                self.set_bindings_in_condition(&condition);
                 let _cond_ty = self.infer_type(condition.clone());
                 let binding_types = {
                     let cond = condition.borrow();
@@ -8498,7 +8499,8 @@ impl TypeResolver {
 
     fn types_are_type_compatible(a: &Type, b: &Type) -> bool {
         match (a, b) {
-            (Type::Void, Type::Void) | (Type::Never, Type::Never) => true,
+            (Type::Never, _) => true,
+            (Type::Void, Type::Void) => true,
             (Type::Struct(n1, ..), Type::Struct(n2, ..))
             | (Type::Class(n1, ..), Type::Class(n2, ..))
             | (Type::Enum(n1, ..), Type::Enum(n2, ..))
