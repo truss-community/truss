@@ -668,18 +668,14 @@ impl BuildOrchestrator {
                     stdlib: stdlib_to_emit,
                 }
             } else {
-                let target_module = file_modules.remove(0);
-                for (_, module) in &file_modules {
-                    for func in module.get_functions() {
-                        let name = func.get_name().to_str().unwrap_or("").to_string();
-                        if !name.is_empty() && target_module.1.get_function(&name).is_none() {
-                            let fn_type = func.get_type();
-                            target_module.1.add_function(&name, fn_type, None);
-                        }
+                let (_, target_module) = file_modules.remove(0);
+                for (_, module) in file_modules {
+                    if let Err(e) = target_module.link_in_module(module) {
+                        eprintln!("warning: failed to link module: {}", e);
                     }
                 }
                 IRModules {
-                    main: Rc::new(target_module.1),
+                    main: Rc::new(target_module),
                     stdlib: stdlib_to_emit,
                 }
             };
