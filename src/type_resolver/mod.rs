@@ -3553,10 +3553,14 @@ impl TypeResolver {
                             callee_type.clone()
                         }
                     }
-                    Type::Class(class_name, ..) => {
+                    Type::Class(class_name, weak_sym, ..) => {
                         let (init_params_info, is_failable_init) = {
-                            let scope = self.current_scope.as_ref().unwrap().borrow();
-                            if let Some(symbol) = scope.get_symbol(class_name) {
+                            let symbol_opt = {
+                                let scope = self.current_scope.as_ref().unwrap().borrow();
+                                weak_sym.0.upgrade()
+                                    .or_else(|| scope.get_symbol_qualified(class_name))
+                            };
+                            if let Some(symbol) = symbol_opt {
                                 let constructors = match &*symbol.borrow() {
                                     Symbol::Struct { constructors, .. }
                                     | Symbol::Class { constructors, .. } => constructors.clone(),
@@ -4569,10 +4573,12 @@ impl TypeResolver {
                         );
                         return None;
                     }
-                    Type::Class(class_name, _, type_params) => {
-                        let scope = self.current_scope.as_ref().unwrap().borrow();
-                        let symbol_opt = scope.get_symbol(class_name);
-                        drop(scope);
+                    Type::Class(class_name, weak_sym, type_params) => {
+                        let symbol_opt = {
+                            let scope = self.current_scope.as_ref().unwrap().borrow();
+                            weak_sym.0.upgrade()
+                                .or_else(|| scope.get_symbol_qualified(class_name))
+                        };
                         let Some(symbol) = symbol_opt else {
                             self.emit_error(
                                 TrussDiagnosticCode::FieldNotFound,
@@ -4905,21 +4911,22 @@ impl TypeResolver {
                     Type::Enum(enum_name, _, type_params) => {
                         let scope = self.current_scope.as_ref().unwrap().borrow();
                         let symbol = scope.get_symbol(enum_name);
-                        let enum_data = symbol.as_ref().and_then(|sym| {
+                         let enum_data = symbol.as_ref().and_then(|sym| {
                             let binding = sym.borrow();
                             if let Symbol::Enum {
                                 cases,
+                                methods,
                                 has_dynamic_member_lookup,
                                 ..
                             } = &*binding
                             {
-                                Some((cases.clone(), *has_dynamic_member_lookup))
+                                Some((cases.clone(), methods.clone(), *has_dynamic_member_lookup))
                             } else {
                                 None
                             }
                         });
                         drop(scope);
-                        let Some((cases, has_dml)) = enum_data else {
+                        let Some((cases, enum_methods, has_dml)) = enum_data else {
                             let token = &*member;
                             self.emit_error(
                                 TrussDiagnosticCode::FieldNotFound,
@@ -4990,6 +4997,87 @@ impl TypeResolver {
                                         }
                                         return Some(case_fn_type);
                                     }
+                                }
+                            }
+                        }
+                        for method in &enum_methods {
+                            if method.borrow().name().as_ref().ok() == Some(&member.value)
+                                && let Some(decl) = method.borrow().get_decl().ok().flatten()
+                            {
+                                if !self.is_member_symbol_accessible(method.clone(), member) {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::InaccessibleMember,
+                                        format!(
+                                            "'{}' is inaccessible due to '{}' level",
+                                            member.value,
+                                            method
+                                                .borrow()
+                                                .get_decl()
+                                                .ok()
+                                                .flatten()
+                                                .map(|d| {
+                                                    d.borrow().access_modifier().map_or(
+                                                        String::from("internal"),
+                                                        |m| {
+                                                            m.map(|m| m.token.value.clone())
+                                                                .unwrap_or(String::from("internal"))
+                                                        },
+                                                    )
+                                                })
+                                                .unwrap_or(String::from("internal"))
+                                        ),
+                                        member,
+                                    );
+                                    return None;
+                                }
+                                let method_ty = {
+                                    let decl_ref = decl.borrow();
+                                    if let Statement::FunctionDecl { ty, .. } = &*decl_ref {
+                                        ty.clone()
+                                    } else {
+                                        continue;
+                                    }
+                                };
+                                if let Some(t) = method_ty {
+                                    *ty = Some(t.clone());
+                                    let m_params = type_params.clone();
+                                    if !m_params.is_empty() {
+                                        if let Some(ref sym) = symbol {
+                                            let sym_ref = sym.borrow();
+                                            if let Ok(Some(decl)) = sym_ref.get_decl() {
+                                                let decl_ref = decl.borrow();
+                                                let gp_names: Vec<String> = match &*decl_ref {
+                                                    Statement::EnumDecl {
+                                                        generic_parameters,
+                                                        ..
+                                                    } => generic_parameters
+                                                        .iter()
+                                                        .map(|gp| gp.name.value.clone())
+                                                        .collect(),
+                                                    _ => vec![],
+                                                };
+                                                drop(decl_ref);
+                                                if gp_names.len() == m_params.len() {
+                                                    let mapping: HashMap<
+                                                        String,
+                                                        Rc<RefCell<Type>>,
+                                                    > = gp_names
+                                                        .iter()
+                                                        .zip(m_params.into_iter())
+                                                        .map(|(n, ty)| (n.clone(), ty))
+                                                        .collect();
+                                                    let substituted =
+                                                        Self::substitute_generic_params(
+                                                            t.clone(),
+                                                            &mapping,
+                                                        );
+                                                    *ty = Some(substituted.clone());
+                                                    return Some(substituted);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Some(t);
                                 }
                             }
                         }
@@ -5323,9 +5411,13 @@ impl TypeResolver {
                     Type::Inline(inner, _) => {
                         let inner_borrow = inner.borrow();
                         match &*inner_borrow {
-                            Type::Class(class_name, ..) => {
-                                let scope = self.current_scope.as_ref().unwrap().borrow();
-                                if let Some(symbol) = scope.get_symbol(class_name) {
+                            Type::Class(class_name, weak_sym, ..) => {
+                                let symbol_opt = {
+                                    let scope = self.current_scope.as_ref().unwrap().borrow();
+                                    weak_sym.0.upgrade()
+                                        .or_else(|| scope.get_symbol_qualified(class_name))
+                                };
+                                if let Some(symbol) = symbol_opt {
                                     let binding = symbol.borrow();
                                     let (properties, methods) = match &*binding {
                                         Symbol::Struct {
@@ -5953,9 +6045,13 @@ impl TypeResolver {
                             return None;
                         }
                     }
-                    Type::Class(class_name, ..) => {
-                        let scope = self.current_scope.as_ref().unwrap().borrow();
-                        if let Some(symbol) = scope.get_symbol(class_name) {
+                    Type::Class(class_name, weak_sym, ..) => {
+                        let symbol_opt = {
+                            let scope = self.current_scope.as_ref().unwrap().borrow();
+                            weak_sym.0.upgrade()
+                                .or_else(|| scope.get_symbol_qualified(class_name))
+                        };
+                        if let Some(symbol) = symbol_opt {
                             if let Ok(Some(decl)) = symbol.borrow().get_decl() {
                                 if !self.is_member_accessible(symbol.clone(), member) {
                                     self.emit_error(
@@ -10485,13 +10581,42 @@ impl TypeResolver {
         }
     }
 
+    fn find_module_path_from_expr(&self, expr: &Expression) -> Option<(Rc<RefCell<Module>>, String)> {
+        match expr {
+            Expression::Variable { symbol, .. } => {
+                let ws = symbol.as_ref()?;
+                let sym = ws.0.upgrade()?;
+                let binding = sym.borrow();
+                if let Symbol::Module { name, module, .. } = &*binding {
+                    Some((module.clone()?, name.clone()))
+                } else {
+                    None
+                }
+            }
+            Expression::MemberAccess { object, member, .. } => {
+                let obj = object.borrow();
+                let (parent_module, parent_path) = self.find_module_path_from_expr(&obj)?;
+                let scope = parent_module.borrow().scope.clone()?;
+                let sym = scope.borrow().get_symbol(&member.value)?;
+                let binding = sym.borrow();
+                if let Symbol::Module { module, .. } = &*binding {
+                    let path = format!("{}.{}", parent_path, member.value);
+                    Some((module.clone()?, path))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn try_module_member_access(
         &mut self,
         object: Rc<RefCell<Expression>>,
         member: &Token,
         ty: &mut Option<Rc<RefCell<Type>>>,
     ) -> Option<Rc<RefCell<Type>>> {
-        let module = self.find_module_from_expr(&object.borrow())?;
+        let (module, prefix_path) = self.find_module_path_from_expr(&object.borrow())?;
         let scope = module.borrow().scope.clone()?;
         let sym = scope.borrow().get_symbol(&member.value)?;
         let binding = sym.borrow();
@@ -10511,7 +10636,15 @@ impl TypeResolver {
                 Statement::ClassDecl { name, .. }
                 | Statement::StructDecl { name, .. }
                 | Statement::EnumDecl { name, .. } => {
-                    scope.borrow().get_type(&name.value)
+                    scope.borrow().get_type(&name.value).map(|t| {
+                        let q = format!("{}.{}", prefix_path, name.value);
+                        Rc::new(RefCell::new(match &*t.borrow() {
+                            Type::Class(_, ws, tp) => Type::Class(q, ws.clone(), tp.clone()),
+                            Type::Struct(_, ws, tp) => Type::Struct(q, ws.clone(), tp.clone()),
+                            Type::Enum(_, ws, tp) => Type::Enum(q, ws.clone(), tp.clone()),
+                            other => other.clone(),
+                        }))
+                    })
                 }
                 _ => None,
             }

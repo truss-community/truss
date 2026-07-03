@@ -61,6 +61,27 @@ impl Scope {
         }
     }
 
+    pub fn get_symbol_qualified(&self, path: &str) -> Option<Rc<RefCell<Symbol>>> {
+        let (head, tail) = match path.split_once('.') {
+            Some((h, t)) => (h, Some(t)),
+            None => (path, None),
+        };
+        let sym = self.get_symbol(head)?;
+        match tail {
+            None => Some(sym),
+            Some(rest) => {
+                let binding = sym.borrow();
+                if let Symbol::Module { module, .. } = &*binding {
+                    let m = module.as_ref()?;
+                    let scope = m.borrow().scope.clone()?;
+                    scope.borrow().get_symbol_qualified(rest)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     pub fn get_all_symbols(&self, name: &str) -> Vec<Rc<RefCell<Symbol>>> {
         let mut result: Vec<Rc<RefCell<Symbol>>> = Vec::new();
         if let Some(prev_overloads) = self.overloads.get(name) {
