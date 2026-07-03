@@ -682,22 +682,28 @@ impl BuildOrchestrator {
 
             let triple = TargetTriple::host().to_triple_string();
 
-            let kind = self
+            let (kind, product_name) = self
                 .manifest
                 .products
                 .first()
-                .map(|p| p.product_type)
-                .unwrap_or(ProductType::Executable);
+                .map(|p| (p.product_type, p.name.clone()))
+                .unwrap_or((ProductType::Executable, self.manifest.name.clone()));
 
             let build_dir = project_path.join("Build");
             std::fs::create_dir_all(&build_dir).ok();
 
             let output_name = match kind {
-                ProductType::Executable => self.manifest.name.clone(),
-                ProductType::Library(LibraryType::Dynamic) => {
-                    format!("lib{}.so", self.manifest.name)
+                ProductType::Executable => {
+                    if cfg!(target_os = "windows") {
+                        format!("{}.exe", product_name)
+                    } else {
+                        product_name.clone()
+                    }
                 }
-                ProductType::Library(LibraryType::Static) => format!("lib{}.a", self.manifest.name),
+                ProductType::Library(LibraryType::Dynamic) => {
+                    format!("lib{}.so", product_name)
+                }
+                ProductType::Library(LibraryType::Static) => format!("lib{}.a", product_name),
             };
             let output_path = build_dir.join(&output_name);
             let output_str = output_path.to_string_lossy().to_string();
