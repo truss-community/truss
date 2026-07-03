@@ -4277,41 +4277,72 @@ impl TypeResolver {
                             return None;
                         };
                         for field in properties {
-                            if field.borrow().name().as_ref().ok() == Some(&member.value)
-                                && let Some(decl) = field.borrow().get_decl().ok().flatten()
-                                && let Statement::VariableDecl { ty: field_ty, .. } =
-                                    &*decl.borrow()
-                                && let Some(t) = field_ty
-                            {
-                                if !self.is_member_symbol_accessible(field.clone(), member) {
-                                    self.emit_error(
-                                        TrussDiagnosticCode::InaccessibleMember,
-                                        format!(
-                                            "'{}' is inaccessible due to '{}' level",
-                                            member.value,
-                                            field
-                                                .borrow()
-                                                .get_decl()
-                                                .ok()
-                                                .flatten()
-                                                .map(|d| {
-                                                    d.borrow().access_modifier().map_or(
-                                                        String::from("internal"),
-                                                        |m| {
-                                                            m.map(|m| m.token.value.clone())
-                                                                .unwrap_or(String::from("internal"))
-                                                        },
-                                                    )
-                                                })
-                                                .unwrap_or(String::from("internal"))
-                                        ),
-                                        member,
-                                    );
-                                    return None;
-                                }
-                                *ty = Some(t.clone());
-                                return Some(t.clone());
+                            if field.borrow().name().as_ref().ok() != Some(&member.value) {
+                                continue;
                             }
+                            let field_decl = match field.borrow().get_decl().ok().flatten() {
+                                Some(d) => d,
+                                None => continue,
+                            };
+                            let (cached_ty, type_expr_opt) = {
+                                let decl_ref = field_decl.borrow();
+                                if let Statement::VariableDecl {
+                                    ty: field_ty,
+                                    type_expression,
+                                    ..
+                                } = &*decl_ref
+                                {
+                                    (field_ty.clone(), type_expression.clone())
+                                } else {
+                                    (None, None)
+                                }
+                            };
+                            let resolved_ty = if let Some(t) = cached_ty {
+                                Some(t)
+                            } else if let Some(type_expr) = type_expr_opt {
+                                self.infer_type(type_expr)
+                            } else {
+                                None
+                            };
+                            let Some(t) = resolved_ty else { continue };
+                            if !self.is_member_symbol_accessible(field.clone(), member) {
+                                self.emit_error(
+                                    TrussDiagnosticCode::InaccessibleMember,
+                                    format!(
+                                        "'{}' is inaccessible due to '{}' level",
+                                        member.value,
+                                        field
+                                            .borrow()
+                                            .get_decl()
+                                            .ok()
+                                            .flatten()
+                                            .map(|d| {
+                                                d.borrow().access_modifier().map_or(
+                                                    String::from("internal"),
+                                                    |m| {
+                                                        m.map(|m| m.token.value.clone())
+                                                            .unwrap_or(String::from("internal"))
+                                                    },
+                                                )
+                                            })
+                                            .unwrap_or(String::from("internal"))
+                                    ),
+                                    member,
+                                );
+                                return None;
+                            }
+                            if let Ok(mut decl_mut) = field_decl.try_borrow_mut() {
+                                if let Statement::VariableDecl {
+                                    ty: field_ty_mut, ..
+                                } = &mut *decl_mut
+                                {
+                                    if field_ty_mut.is_none() {
+                                        *field_ty_mut = Some(t.clone());
+                                    }
+                                }
+                            }
+                            *ty = Some(t.clone());
+                            return Some(t.clone());
                         }
                         for method in methods {
                             if method.borrow().name().as_ref().ok() == Some(&member.value)
