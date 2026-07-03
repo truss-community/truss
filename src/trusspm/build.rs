@@ -28,6 +28,7 @@ pub struct BuildOrchestrator {
     engine: Rc<RefCell<TrussDiagnosticEngine>>,
     pub output_path: Option<String>,
     file_cache: HashMap<String, CachedBuildFile>,
+    local_target_stmts: Vec<Rc<RefCell<Statement>>>,
 }
 
 impl BuildOrchestrator {
@@ -49,6 +50,7 @@ impl BuildOrchestrator {
             engine,
             output_path: None,
             file_cache: HashMap::new(),
+            local_target_stmts: Vec::new(),
         })
     }
 
@@ -318,6 +320,9 @@ impl BuildOrchestrator {
                         eprintln!("{}", formatted);
                     }
                     return;
+                }
+                for stmt in &file_stmts {
+                    self.local_target_stmts.push(stmt.clone());
                 }
             }
         }
@@ -627,6 +632,7 @@ impl BuildOrchestrator {
                             }
                         }
                     }
+                    program.statements.extend(self.local_target_stmts.iter().cloned());
                 }
 
                 let file_ir_gen =
