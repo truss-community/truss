@@ -9195,13 +9195,56 @@ impl TypeResolver {
         case_name: &Token,
         _bindings: &[Pattern],
     ) -> Option<Vec<Rc<RefCell<Type>>>> {
-        if let Some(name) = enum_name {
-            self.get_enum_case_parameter_types(name, &case_name.value)
-        } else if let Type::Enum(enum_name, ..) = &*expr_ty.borrow() {
-            self.get_enum_case_parameter_types(enum_name, &case_name.value)
+        let (name, type_args) = if let Some(name) = enum_name {
+            (name.to_string(), vec![])
+        } else if let Type::Enum(enum_name, _, type_params) = &*expr_ty.borrow() {
+            (enum_name.clone(), type_params.clone())
         } else {
-            None
+            return None;
+        };
+        let raw_types = self.get_enum_case_parameter_types(&name, &case_name.value)?;
+        if type_args.is_empty() {
+            return Some(raw_types);
         }
+        let scope = self.current_scope.as_ref()?;
+        let scope_ref = scope.borrow();
+        let symbol = scope_ref.get_symbol(&name)?;
+        let decl_opt = symbol.borrow().get_decl().ok().flatten();
+        drop(scope_ref);
+        let gp_names: Vec<String> = if let Some(decl) = decl_opt {
+            let decl_ref = decl.borrow();
+            match &*decl_ref {
+                Statement::EnumDecl {
+                    generic_parameters, ..
+                } => generic_parameters
+                    .iter()
+                    .filter_map(|gp| {
+                        if let crate::ast::statement::GenericParameterKind::Type { .. } = &gp.kind
+                        {
+                            Some(gp.name.value.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => vec![],
+            }
+        } else {
+            vec![]
+        };
+        if gp_names.is_empty() || gp_names.len() != type_args.len() {
+            return Some(raw_types);
+        }
+        let mapping: std::collections::HashMap<String, Rc<RefCell<Type>>> = gp_names
+            .into_iter()
+            .zip(type_args.into_iter())
+            .collect();
+        Some(
+            raw_types
+                .into_iter()
+                .map(|t| Self::substitute_generic_params(t, &mapping))
+                .collect(),
+        )
     }
 
     fn resolve_for_pattern(
