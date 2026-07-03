@@ -10502,16 +10502,21 @@ impl TypeResolver {
 
         let decl = binding.get_decl().ok()??;
         drop(binding);
-        drop(scope);
 
         let member_type = {
             let decl_ref = decl.borrow();
             match &*decl_ref {
                 Statement::FunctionDecl { ty: fn_ty, .. } => fn_ty.clone(),
                 Statement::VariableDecl { ty: var_ty, .. } => var_ty.clone(),
+                Statement::ClassDecl { name, .. }
+                | Statement::StructDecl { name, .. }
+                | Statement::EnumDecl { name, .. } => {
+                    scope.borrow().get_type(&name.value)
+                }
                 _ => None,
             }
         };
+        drop(scope);
 
         if let Some(t) = member_type {
             *ty = Some(t.clone());

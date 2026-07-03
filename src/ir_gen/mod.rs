@@ -13024,16 +13024,11 @@ impl<'ctx> IRGenerator<'ctx> {
             Type::Class(name, ..) => {
                 let ptr_type: BasicTypeEnum<'ctx> =
                     self.context.ptr_type(inkwell::AddressSpace::from(0)).into();
-                if self.class_types.borrow().contains_key(name) {
-                    ptr_type
-                } else {
-                    self.emit_error(
-                        TrussDiagnosticCode::StructTypeNotSupported,
-                        format!("Class type '{}' not found in IR generation", name),
-                        None,
-                    );
-                    anyhow::bail!("Class type not found");
+                if !self.class_types.borrow().contains_key(name) {
+                    let class_type = self.context.opaque_struct_type(name);
+                    self.class_types.borrow_mut().insert(name.clone(), class_type);
                 }
+                ptr_type
             }
             Type::Enum(name, ..) => {
                 if let Some(enum_type) = self.enum_types.borrow().get(name) {
