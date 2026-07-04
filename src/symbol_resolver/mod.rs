@@ -1671,10 +1671,21 @@ impl SymbolResolver {
                                 .and_then(|p| resolve_module(p, &module_path));
                             if let Some(module) = module {
                                 let name = path.last().unwrap().clone();
-                                let module_symbol = Rc::new(RefCell::new(Symbol::Module {
-                                    name: name.clone(),
-                                    decl: stmt.clone(),
-                                    module: Some(module),
+                                let is_package = !*is_current_package
+                                    && path.len() >= 1
+                                    && self.packages.contains_key(&path[0]);
+                                let module_symbol = Rc::new(RefCell::new(if is_package {
+                                    Symbol::Package {
+                                        name: name.clone(),
+                                        decl: stmt.clone(),
+                                        module: Some(module),
+                                    }
+                                } else {
+                                    Symbol::Module {
+                                        name: name.clone(),
+                                        decl: stmt.clone(),
+                                        module: Some(module),
+                                    }
                                 }));
                                 let name_token = Token::new(
                                     name,

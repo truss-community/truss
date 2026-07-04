@@ -140,6 +140,11 @@ pub enum Symbol {
         decl: Rc<RefCell<Statement>>,
         module: Option<Rc<RefCell<PackageModule>>>,
     },
+    Package {
+        name: String,
+        decl: Rc<RefCell<Statement>>,
+        module: Option<Rc<RefCell<PackageModule>>>,
+    },
     Macro {
         name: String,
         decl: Rc<RefCell<Statement>>,
@@ -405,6 +410,7 @@ impl PartialEq for Symbol {
                 },
             ) => a == b && ap == bp && ad == bd && aa == ba,
             (Self::Module { name: a, .. }, Self::Module { name: b, .. }) => a == b,
+            (Self::Package { name: a, .. }, Self::Package { name: b, .. }) => a == b,
             (Self::Macro { name: a, .. }, Self::Macro { name: b, .. }) => a == b,
             _ => false,
         }
@@ -431,6 +437,7 @@ impl Symbol {
             Self::ProtocolProperty { name, .. } => Ok(name.clone()),
             Self::ProtocolSubscript { name, .. } => Ok(name.clone()),
             Self::Module { name, .. } => Ok(name.clone()),
+            Self::Package { name, .. } => Ok(name.clone()),
             Self::Macro { name, .. } => Ok(name.clone()),
         }
     }
@@ -454,6 +461,7 @@ impl Symbol {
             Self::ProtocolProperty { name, .. } => *name = new_name.to_string(),
             Self::ProtocolSubscript { name, .. } => *name = new_name.to_string(),
             Self::Module { name, .. } => *name = new_name.to_string(),
+            Self::Package { name, .. } => *name = new_name.to_string(),
             Self::Macro { name, .. } => *name = new_name.to_string(),
         }
         cloned
@@ -477,6 +485,7 @@ impl Symbol {
             Self::ProtocolProperty { decl, .. } => Ok(decl.clone()),
             Self::ProtocolSubscript { decl, .. } => Ok(decl.clone()),
             Self::Module { decl, .. } => Ok(Some(decl.clone())),
+            Self::Package { decl, .. } => Ok(Some(decl.clone())),
             Self::Macro { decl, .. } => Ok(Some(decl.clone())),
         }
     }
