@@ -354,7 +354,7 @@ impl<'ctx> IRGenerator<'ctx> {
             *self.program_scope.borrow_mut() = Some(scope);
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
-            self.run_all_passes(&all_stmts);
+            let _ = self.run_all_passes(&all_stmts);
             self.generate_main_wrapper(program);
             return IRModules {
                 main: Rc::new(self.module),
@@ -367,7 +367,7 @@ impl<'ctx> IRGenerator<'ctx> {
         *self.program_scope.borrow_mut() = Some(scope.clone());
         let saved_pkg = std::mem::replace(&mut self.package_name, "Truss".to_string());
         let saved_mod = std::mem::replace(&mut *self.module_name.borrow_mut(), String::new());
-        self.run_all_passes(stdlib_stmts);
+        let _ = self.run_all_passes(stdlib_stmts);
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
         let _ = self.module.verify();
@@ -463,7 +463,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
         *self.program_scope.borrow_mut() = Some(scope);
         let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.iter().cloned().collect();
-        self.run_all_passes(&all_main);
+        let _ = self.run_all_passes(&all_main);
 
         self.generate_main_wrapper(program);
 
@@ -478,7 +478,7 @@ impl<'ctx> IRGenerator<'ctx> {
         }
     }
 
-    fn run_all_passes(&self, stmts: &[Rc<RefCell<Statement>>]) {
+    fn run_all_passes(&self, stmts: &[Rc<RefCell<Statement>>]) -> Result<()> {
         for stmt in stmts {
             self.declare_struct_types(stmt.clone());
         }
@@ -529,8 +529,7 @@ impl<'ctx> IRGenerator<'ctx> {
             self.create_protocol_witness_tables(stmt.clone());
         }
         for stmt in stmts {
-            // Catch compilation errors silently to avoid leaving LLVM in invalid state
-            let _ = self.resolve_statement(stmt.clone());
+            self.resolve_statement(stmt.clone())?;
         }
         // After all compilation, fix any blocks missing terminators across all functions
         for func in self.module.get_functions() {
@@ -548,6 +547,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 }
             }
         }
+        Ok(())
     }
 
     fn declare_struct_types(&self, statement: Rc<RefCell<Statement>>) {
@@ -4685,6 +4685,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.builder.position_at_end(entry_block);
 
                     self.enter_scope();
+                    let is_void = matches!(&*return_type.borrow(), Type::Void);
+                    let compile_result: Result<bool> = (|| -> Result<bool> {
                     let is_class_method;
                     let is_struct_method;
                     let is_protocol_method;
@@ -4798,8 +4800,6 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
 
-                    let is_void = matches!(&*return_type.borrow(), Type::Void);
-
                     match &*body.borrow() {
                         FunctionBody::Statements(stmts) => {
                             self.enter_scope_with_stmts(stmts)?;
@@ -4867,22 +4867,21 @@ impl<'ctx> IRGenerator<'ctx> {
                             }
                         }
                     }
-                    // Ensure entry block has a terminator even if body compilation failed
-                    if !self
-                        .builder
-                        .get_insert_block()
-                        .map_or(false, |b| b.get_terminator().is_some())
-                    {
-                        if is_void {
-                            let _ = self.builder.build_return(None);
-                        } else {
-                            let fn_ty = function.get_type();
-                            if fn_ty.get_return_type().is_some() {
-                                let zero: BasicValueEnum<'ctx> =
-                                    self.context.i32_type().const_zero().into();
-                                let _ = self.builder.build_return(Some(&zero));
-                            } else {
+                        Ok(false)
+                    })();
+                    if let Some(bb) = self.builder.get_insert_block() {
+                        if bb.get_terminator().is_none() {
+                            if is_void {
                                 let _ = self.builder.build_return(None);
+                            } else {
+                                let fn_ty = function.get_type();
+                                if fn_ty.get_return_type().is_some() {
+                                    let zero: BasicValueEnum<'ctx> =
+                                        self.context.i32_type().const_zero().into();
+                                    let _ = self.builder.build_return(Some(&zero));
+                                } else {
+                                    let _ = self.builder.build_return(None);
+                                }
                             }
                         }
                     }
@@ -4894,6 +4893,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     if let Some(sname) = saved_struct {
                         self.current_struct.borrow_mut().replace(sname);
                     }
+                    compile_result?;
                 }
                 Ok(false)
             }
