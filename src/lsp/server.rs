@@ -147,6 +147,7 @@ struct ProjectAnalysis {
     scope: Rc<RefCell<Scope>>,
     #[allow(dead_code)]
     module: Rc<RefCell<Module>>,
+    fn_scopes: Vec<(usize, usize, Rc<RefCell<Scope>>)>,
 }
 
 struct CachedFile {
@@ -168,6 +169,59 @@ struct LanguageServer {
     project_analyses: HashMap<String, ProjectAnalysis>,
     file_cache: HashMap<String, CachedFile>,
     dep_cache: HashMap<String, DepCache>,
+}
+
+fn collect_fn_scopes(
+    stmts: &[Rc<RefCell<Statement>>],
+    fn_scopes: &mut Vec<(usize, usize, Rc<RefCell<Scope>>)>,
+) {
+    for stmt in stmts {
+        let s = stmt.borrow();
+        match &*s {
+            Statement::FunctionDecl { body, scope, .. } => {
+                let start_line = s.token().position.line;
+                if let Some(fn_scope) = scope {
+                    if let FunctionBody::Statements(body_stmts) = &*body.borrow() {
+                        let end_line = body_stmts
+                            .last()
+                            .map(|bs| bs.borrow().token().position.line)
+                            .unwrap_or(start_line);
+                        fn_scopes.push((start_line, end_line, fn_scope.clone()));
+                        collect_fn_scopes(body_stmts, fn_scopes);
+                    }
+                }
+            }
+            Statement::InitDecl { body, scope, .. } => {
+                let start_line = s.token().position.line;
+                if let Some(fn_scope) = scope {
+                    if let FunctionBody::Statements(body_stmts) = &*body.borrow() {
+                        let end_line = body_stmts
+                            .last()
+                            .map(|bs| bs.borrow().token().position.line)
+                            .unwrap_or(start_line);
+                        fn_scopes.push((start_line, end_line, fn_scope.clone()));
+                        collect_fn_scopes(body_stmts, fn_scopes);
+                    }
+                }
+            }
+            Statement::StructDecl { body, .. } => {
+                collect_fn_scopes(body, fn_scopes);
+            }
+            Statement::ClassDecl { body, .. } => {
+                collect_fn_scopes(body, fn_scopes);
+            }
+            Statement::EnumDecl { body, .. } => {
+                collect_fn_scopes(body, fn_scopes);
+            }
+            Statement::ExtensionDecl { body, .. } => {
+                collect_fn_scopes(body, fn_scopes);
+            }
+            Statement::ModuleDecl { body, .. } => {
+                collect_fn_scopes(body, fn_scopes);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl LanguageServer {
@@ -826,6 +880,22 @@ impl LanguageServer {
         }
         eprintln!("TRUSS_LSP_ANALYSIS: symbol resolve passed");
 
+        let mut fn_scopes: Vec<(usize, usize, Rc<RefCell<Scope>>)> = Vec::new();
+        collect_fn_scopes(&program.statements, &mut fn_scopes);
+
+        self.project_analyses.insert(
+            file_path.to_string(),
+            ProjectAnalysis {
+                scope: module.borrow().scope.clone().unwrap_or_else(|| {
+                    let s = Rc::new(RefCell::new(Scope::new(None)));
+                    module.borrow_mut().scope = Some(s.clone());
+                    s
+                }),
+                module: module.clone(),
+                fn_scopes,
+            },
+        );
+
         let mut type_resolver = TypeResolver::new(
             packages.clone(),
             effective_pkg_name.clone(),
@@ -840,20 +910,6 @@ impl LanguageServer {
             "TRUSS_LSP_ANALYSIS: type resolve done, diags={}",
             type_diag_count
         );
-
-        if !analysis_engine.borrow().has_errors() {
-            self.project_analyses.insert(
-                file_path.to_string(),
-                ProjectAnalysis {
-                    scope: module.borrow().scope.clone().unwrap_or_else(|| {
-                        let s = Rc::new(RefCell::new(Scope::new(None)));
-                        module.borrow_mut().scope = Some(s.clone());
-                        s
-                    }),
-                    module: module.clone(),
-                },
-            );
-        }
 
         analysis_diags
     }
@@ -1330,6 +1386,7 @@ impl LanguageServer {
                     Symbol::StructMethod { .. } | Symbol::ClassMethod { .. } => (2, "method"),
                     Symbol::EnumCase { .. } => (20, "enum case"),
                     Symbol::Module { .. } => (9, "module"),
+                    Symbol::Package { .. } => (9, "package"),
                     Symbol::Macro { .. } => (14, "macro"),
                     _ => continue,
                 };
@@ -1477,6 +1534,49 @@ impl LanguageServer {
                                         | Symbol::ClassMethod { .. } => (2, "method"),
                                         Symbol::EnumCase { .. } => (20, "enum case"),
                                         Symbol::Module { .. } => (9, "module"),
+                                        Symbol::Package { .. } => (9, "package"),
+                                        Symbol::Macro { .. } => (14, "macro"),
+                                        _ => (0, "symbol"),
+                                    };
+                                    (name.clone(), kind, detail)
+                                })
+                                .collect();
+                            (props, meths)
+                        }
+                        None => (vec![], vec![]),
+                    }
+                }
+                Symbol::Package {
+                    module: Some(mod_ref),
+                    ..
+                } => {
+                    let scope = mod_ref.borrow().scope.clone();
+                    match scope {
+                        Some(s) => {
+                            let sb = s.borrow();
+                            let props: Vec<_> = sb
+                                .type_env
+                                .iter()
+                                .map(|(name, _)| (name.clone(), 22, "type"))
+                                .collect();
+                            let meths: Vec<_> = sb
+                                .name_table
+                                .iter()
+                                .map(|(name, symbol)| {
+                                    let (kind, detail) = match &*symbol.borrow() {
+                                        Symbol::Function { .. } => (3, "function"),
+                                        Symbol::Variable { .. } => (6, "variable"),
+                                        Symbol::Struct { .. } => (22, "struct"),
+                                        Symbol::Class { .. } => (7, "class"),
+                                        Symbol::Enum { .. } => (13, "enum"),
+                                        Symbol::Protocol { .. } => (8, "protocol"),
+                                        Symbol::StructProperty { .. }
+                                        | Symbol::ClassProperty { .. } => (10, "property"),
+                                        Symbol::StructMethod { .. }
+                                        | Symbol::ClassMethod { .. } => (2, "method"),
+                                        Symbol::EnumCase { .. } => (20, "enum case"),
+                                        Symbol::Module { .. } => (9, "module"),
+                                        Symbol::Package { .. } => (9, "package"),
                                         Symbol::Macro { .. } => (14, "macro"),
                                         _ => (0, "symbol"),
                                     };
@@ -1674,6 +1774,7 @@ impl LanguageServer {
                 Symbol::ProtocolSubscript { .. } => "subscript",
                 Symbol::EnumCase { .. } => "enum case",
                 Symbol::Module { .. } => "module",
+                Symbol::Package { .. } => "package",
                 Symbol::Macro { .. } => "macro",
                 _ => "symbol",
             };
@@ -1684,13 +1785,48 @@ impl LanguageServer {
             let markdown = format!("```truss\n{}\ntype\n```", type_desc);
             Some(json!({"contents": {"kind": "markdown", "value": markdown}}))
         } else {
-            None
+            let file_path = uri.trim_start_matches("file://");
+            self.lookup_in_fn_scopes(file_path, &word, line)
         };
 
         match result {
             Some(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}).to_string(),
             None => json!({"jsonrpc": "2.0", "id": id, "result": null}).to_string(),
         }
+    }
+
+    fn lookup_in_fn_scopes(&self, file_path: &str, word: &str, line: usize) -> Option<Value> {
+        let analysis = self.project_analyses.get(file_path)?;
+        let scope = analysis
+            .fn_scopes
+            .iter()
+            .filter(|(start, end, _)| line >= *start && line <= *end)
+            .max_by_key(|(start, _, _)| *start)
+            .map(|(_, _, s)| s)?;
+        let sym = scope.borrow().get_symbol(word)?;
+        let sym_borrow = sym.borrow();
+        let type_str = self.symbol_type_string(&sym_borrow);
+        let sym_name = sym_borrow.name().unwrap_or_default();
+        let mut markdown = "```truss\n".to_string();
+        match &*sym_borrow {
+            Symbol::Variable { is_var, .. } => {
+                markdown.push_str(&sym_name);
+                if let Some(ref ty) = type_str {
+                    markdown.push_str(&format!(": {}", ty));
+                }
+                let decl_kw = if *is_var { "var" } else { "let" };
+                markdown.push_str(&format!("\n{}", decl_kw));
+            }
+            _ => {
+                markdown.push_str(&sym_name);
+                if let Some(ref ty) = type_str {
+                    markdown.push_str(&format!(": {}", ty));
+                }
+                markdown.push_str("\nparam");
+            }
+        }
+        markdown.push_str("\n```");
+        Some(json!({"contents": {"kind": "markdown", "value": markdown}}))
     }
 
     fn handle_signature_help(&self, id: Option<u64>, params: Option<&Value>) -> String {
