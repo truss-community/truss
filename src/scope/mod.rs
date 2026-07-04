@@ -15,6 +15,7 @@ pub struct Scope {
     pub parent: Option<Rc<RefCell<Scope>>>,
     pub captured_by_closures: HashSet<String>,
     pub module_name: Option<String>,
+    pub imported_names: HashSet<String>,
 }
 
 impl fmt::Debug for Scope {
@@ -38,7 +39,13 @@ impl Scope {
             parent,
             captured_by_closures: HashSet::new(),
             module_name: None,
+            imported_names: HashSet::new(),
         }
+    }
+
+    pub fn enter_as_import(&mut self, name: String, symbol: Rc<RefCell<Symbol>>) {
+        self.name_table.insert(name.clone(), symbol);
+        self.imported_names.insert(name);
     }
 
     fn is_overloadable_symbol(symbol: &Symbol) -> bool {

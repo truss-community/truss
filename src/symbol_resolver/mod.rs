@@ -89,7 +89,7 @@ impl SymbolResolver {
         );
         for (name, symbol) in entries {
             let name_token = Token::new(
-                name,
+                name.clone(),
                 crate::lexer::token::TokenType::Identifier,
                 crate::lexer::token::Position {
                     pos: 0,
@@ -100,6 +100,9 @@ impl SymbolResolver {
                 file.clone(),
             );
             self.enter(symbol, &name_token);
+            if let Some(scope) = self.current_scope.as_ref() {
+                scope.borrow_mut().imported_names.insert(name);
+            }
         }
         for (name, ty) in type_entries {
             if let Some(current_scope) = self.current_scope.as_ref() {
@@ -1680,6 +1683,9 @@ impl SymbolResolver {
                                     token.file.clone(),
                                 );
                                 self.enter(module_symbol, &name_token);
+                                if let Some(scope) = self.current_scope.as_ref() {
+                                    scope.borrow_mut().imported_names.insert(name_token.value.clone());
+                                }
                             } else if path.len() == 2
                                 && !*is_current_package
                                 && self.packages.contains_key(&path[0])
@@ -1695,12 +1701,15 @@ impl SymbolResolver {
                                 });
                                 if let Some(sym) = found {
                                     let name_token = Token::new(
-                                        member_name,
+                                        member_name.clone(),
                                         crate::lexer::token::TokenType::Identifier,
                                         token.position.clone(),
                                         token.file.clone(),
                                     );
                                     self.enter(sym, &name_token);
+                                    if let Some(scope) = self.current_scope.as_ref() {
+                                        scope.borrow_mut().imported_names.insert(member_name);
+                                    }
                                 } else {
                                     self.emit_error(
                                         TrussDiagnosticCode::SymbolError,
@@ -1747,6 +1756,9 @@ impl SymbolResolver {
                             });
                             if let Some(symbol) = found_symbol {
                                 self.enter(symbol, token.as_ref());
+                                if let Some(scope) = self.current_scope.as_ref() {
+                                    scope.borrow_mut().imported_names.insert(member_name.clone());
+                                }
                             } else {
                                 self.emit_error(
                                     TrussDiagnosticCode::SymbolError,
@@ -1772,17 +1784,22 @@ impl SymbolResolver {
                                 .as_ref()
                                 .and_then(|p| resolve_module(p, &module_path));
                             if let Some(module) = module {
-                                let names: Vec<String> = {
+                                let (names, target_scope) = {
                                     let scope = module.borrow().scope.clone();
-                                    scope
-                                        .map(|s| s.borrow().name_table.keys().cloned().collect())
-                                        .unwrap_or_default()
+                                    let names = scope
+                                        .as_ref()
+                                        .map(|s| s.borrow().name_table.keys().cloned().collect::<Vec<_>>())
+                                        .unwrap_or_default();
+                                    (names, scope)
                                 };
                                 for name in names {
-                                    if let Some(symbol) = module
-                                        .borrow()
-                                        .scope
-                                        .clone()
+                                    if let Some(ref ts) = target_scope {
+                                        if ts.borrow().imported_names.contains(&name) {
+                                            continue;
+                                        }
+                                    }
+                                    if let Some(symbol) = target_scope
+                                        .as_ref()
                                         .and_then(|scope| scope.borrow().get_symbol(&name))
                                     {
                                         let name_token = Token::new(
@@ -1792,6 +1809,9 @@ impl SymbolResolver {
                                             token.file.clone(),
                                         );
                                         self.enter(symbol, &name_token);
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().imported_names.insert(name);
+                                        }
                                     }
                                 }
                             } else {
