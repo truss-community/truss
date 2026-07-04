@@ -1409,27 +1409,65 @@ impl LanguageServer {
         }
         let current_line = lines[line];
         let before_dot = &current_line[..character.saturating_sub(1).min(current_line.len())];
-        let obj_name = before_dot
+        let path_str = before_dot
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
             .filter(|s| !s.is_empty())
             .last()
-            .and_then(|s| {
-                if s.ends_with('.') {
-                    s.trim_end_matches('.')
-                        .split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .last()
-                } else {
-                    Some(s)
-                }
-            })
+            .map(|s| s.trim_end_matches('.'))
             .unwrap_or("");
 
-        if obj_name.is_empty() {
+        if path_str.is_empty() {
             return;
         }
 
-        if let Some((sym, _)) = self.lookup_symbol_in_scopes(obj_name) {
-            let sym_borrow = sym.borrow();
+        let segments: Vec<&str> = path_str.split('.').collect();
+
+        let first_sym = match self.lookup_symbol_in_scopes(segments[0]) {
+            Some((sym, _)) => sym,
+            None => return,
+        };
+
+        let mut current_sym = first_sym;
+        for &seg in &segments[1..] {
+            let next = {
+                let borrowed = current_sym.borrow();
+                match &*borrowed {
+                    Symbol::Module {
+                        module: Some(mod_ref),
+                        decl,
+                        ..
+                    }
+                    | Symbol::Package {
+                        module: Some(mod_ref),
+                        decl,
+                        ..
+                    } => {
+                        let scope = mod_ref.borrow().scope.clone();
+                        let child = mod_ref.borrow().children.get(seg).cloned();
+                        let decl_clone = decl.clone();
+                        scope
+                            .and_then(|s| s.borrow().get_symbol(seg))
+                            .or_else(|| {
+                                child.map(|child_mod| {
+                                    Rc::new(RefCell::new(Symbol::Module {
+                                        name: seg.to_string(),
+                                        decl: decl_clone,
+                                        module: Some(child_mod),
+                                    }))
+                                })
+                            })
+                    }
+                    _ => None,
+                }
+            };
+            match next {
+                Some(sym) => current_sym = sym,
+                None => return,
+            }
+        }
+
+        {
+            let sym_borrow = current_sym.borrow();
             let (properties, methods) = match &*sym_borrow {
                 Symbol::Struct {
                     properties,
