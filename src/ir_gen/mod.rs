@@ -4238,33 +4238,34 @@ impl<'ctx> IRGenerator<'ctx> {
                                 Some(sname),
                             )?;
                         }
-                    } else if is_class && initializer.is_none() {
-                        // Class stored properties are initialized in init, not at declaration,
-                        // so they have no initializer. This guard prevents auto-accessor
-                        // generation for local variables inside computed property bodies.
-                        let is_var = matches!(
-                            &token.ty,
-                            TokenType::Keyword {
-                                keyword: KeywordType::Var
-                            }
-                        );
-                        self.generate_auto_accessor(
-                            &fn_prefix,
-                            &name.value,
-                            true,
-                            llvm_var_type,
-                            sname,
-                            accessors,
-                        )?;
-                        if is_var {
+                    } else if is_class {
+                        let getter_name =
+                            self.mangle_fn_name(&format!("{}.getter", fn_prefix), &[]);
+                        if self.module.get_function(&getter_name).is_some() {
+                            let is_var = matches!(
+                                &token.ty,
+                                TokenType::Keyword {
+                                    keyword: KeywordType::Var
+                                }
+                            );
                             self.generate_auto_accessor(
                                 &fn_prefix,
                                 &name.value,
-                                false,
+                                true,
                                 llvm_var_type,
                                 sname,
                                 accessors,
                             )?;
+                            if is_var {
+                                self.generate_auto_accessor(
+                                    &fn_prefix,
+                                    &name.value,
+                                    false,
+                                    llvm_var_type,
+                                    sname,
+                                    accessors,
+                                )?;
+                            }
                         }
                     } else if !accessors.is_empty() {
                         for accessor in accessors {
@@ -4648,7 +4649,10 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.builder.build_unconditional_branch(cond_bb)?;
                     self.builder.position_at_end(exit_bb);
                 } else {
-                    self.resolve_block_expression(body)?;
+                    self.builder.build_unconditional_branch(exit_bb)?;
+                    self.builder.position_at_end(body_bb);
+                    self.builder.build_unconditional_branch(cond_bb)?;
+                    self.builder.position_at_end(exit_bb);
                 }
 
                 self.loop_break_targets.borrow_mut().pop();
@@ -6235,6 +6239,53 @@ impl<'ctx> IRGenerator<'ctx> {
                     };
                     let val = self.builder.build_load(llvm_type, field_ptr, "")?;
                     Ok(Some(val))
+                } else if let Some((sname, struct_ptr)) = {
+                    let b = self.current_accessor_struct.borrow();
+                    b.as_ref().and_then(|(sn, sp)| {
+                        if self.class_types.borrow().contains_key(sn.as_str()) {
+                            Some((sn.clone(), *sp))
+                        } else {
+                            None
+                        }
+                    })
+                } {
+                    let getter_name = self.mangle_fn_name(
+                        &format!("{}.{}.getter", sname, name.value),
+                        &[],
+                    );
+                    if let Some(getter_fn) = self.module.get_function(&getter_name) {
+                        let result =
+                            self.builder.build_call(getter_fn, &[struct_ptr.into()], "")?;
+                        match result.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(val) => Ok(Some(val)),
+                            _ => Ok(None),
+                        }
+                    } else if let Ok(idx) =
+                        self.get_stored_class_field_index(&sname, &name.value)
+                    {
+                        let ctype = *self.class_types.borrow().get(sname.as_str()).unwrap();
+                        let field_ptr = self.builder.build_struct_gep(
+                            ctype,
+                            struct_ptr,
+                            idx as u32,
+                            "",
+                        )?;
+                        let llvm_type = if let Some(ty) = ty {
+                            self.resolve_type(ty.clone())?
+                        } else {
+                            anyhow::bail!(
+                                "Cannot infer type for class field '{}'",
+                                name.value
+                            )
+                        };
+                        Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
+                    } else {
+                        anyhow::bail!(
+                            "Undefined member '{}' in class '{}'",
+                            name.value,
+                            sname
+                        )
+                    }
                 } else if let Some(fn_val) = self.module.get_function(&name.value).or_else(|| {
                     self.mangled_fn_names
                         .borrow()
