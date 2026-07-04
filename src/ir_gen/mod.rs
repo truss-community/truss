@@ -1400,10 +1400,23 @@ impl<'ctx> IRGenerator<'ctx> {
         match ty {
             Type::Void => "V".into(),
             Type::Never => "N".into(),
-            Type::Struct(name, ..)
-            | Type::Class(name, ..)
-            | Type::Enum(name, ..)
-            | Type::Protocol(name, ..) => name.clone(),
+            Type::Struct(name, weak_sym, ..)
+            | Type::Class(name, weak_sym, ..)
+            | Type::Enum(name, weak_sym, ..)
+            | Type::Protocol(name, weak_sym, ..) => {
+                if let Some(sym_rc) = weak_sym.0.upgrade() {
+                    let pkg = match &*sym_rc.borrow() {
+                        crate::symbol::Symbol::Struct { package, .. }
+                        | crate::symbol::Symbol::Class { package, .. }
+                        | crate::symbol::Symbol::Enum { package, .. }
+                        | crate::symbol::Symbol::Protocol { package, .. } => package.clone(),
+                        _ => self.package_name.clone(),
+                    };
+                    format!("{}$${}", pkg, name)
+                } else {
+                    name.clone()
+                }
+            }
             Type::Pointer(_) => "P".into(),
             Type::NonNullPointer(_) => "NP".into(),
             Type::Tuple(_) => "T".into(),
@@ -2789,7 +2802,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 field_types.push(ptr_ty.into());
             }
 
-            let vtable_name = format!("vtable.{}", class_name);
+            let vtable_name = Self::mangle_type_name("VT", &self.package_name, &*self.module_name.borrow(), class_name);
             let vtable_type = self.context.opaque_struct_type(&vtable_name);
             vtable_type.set_body(&field_types, false);
             self.vtable_types
@@ -2998,18 +3011,32 @@ impl<'ctx> IRGenerator<'ctx> {
         entries
     }
 
-    fn get_compound_protocol_names(&self, types: &[Rc<RefCell<Type>>]) -> Vec<String> {
+    fn get_compound_protocol_names(&self, types: &[Rc<RefCell<Type>>]) -> Vec<(String, String)> {
         types
             .iter()
             .filter_map(|t| match &*t.borrow() {
-                Type::Protocol(name, ..) => Some(name.clone()),
+                Type::Protocol(name, weak_sym, ..) => {
+                    let pkg = if let Some(sym_rc) = weak_sym.0.upgrade() {
+                        match &*sym_rc.borrow() {
+                            crate::symbol::Symbol::Protocol { package, .. } => package.clone(),
+                            _ => self.package_name.clone(),
+                        }
+                    } else {
+                        self.package_name.clone()
+                    };
+                    Some((pkg, name.clone()))
+                }
                 _ => None,
             })
             .collect()
     }
 
-    fn build_compound_protocol_key(&self, names: &[String]) -> String {
-        names.join(" & ")
+    fn build_compound_protocol_key(&self, names: &[(String, String)]) -> String {
+        names
+            .iter()
+            .map(|(pkg, name)| format!("{}$${}", pkg, name))
+            .collect::<Vec<_>>()
+            .join(" & ")
     }
 
     fn find_overloaded_witness_fn(
@@ -3110,7 +3137,7 @@ impl<'ctx> IRGenerator<'ctx> {
             for _ in &entries {
                 field_types.push(ptr_ty.into());
             }
-            let wt_name = format!("protocol_wt.{}", protocol_name);
+            let wt_name = Self::mangle_type_name("PWT", &self.package_name, &*self.module_name.borrow(), protocol_name);
             let wt_type = self.context.opaque_struct_type(&wt_name);
             wt_type.set_body(&field_types, false);
             self.protocol_witness_table_types
@@ -3148,7 +3175,7 @@ impl<'ctx> IRGenerator<'ctx> {
             }
             let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
             let field_types: Vec<BasicTypeEnum<'ctx>> = vec![ptr_ty.into(), ptr_ty.into()];
-            let container_name = format!("existential.{}", protocol_name);
+            let container_name = Self::mangle_type_name("EX", &self.package_name, &*self.module_name.borrow(), protocol_name);
             let container_type = self.context.opaque_struct_type(&container_name);
             container_type.set_body(&field_types, false);
             self.existential_container_types
@@ -3194,7 +3221,15 @@ impl<'ctx> IRGenerator<'ctx> {
             for _ in &names {
                 field_types.push(ptr_ty.into());
             }
-            let container_name = format!("existential.{}", key);
+            let entries: Vec<String> = names
+                .iter()
+                .map(|(pkg, name)| format!("{}$${}", pkg, name))
+                .collect();
+            let container_name = if entries.len() >= 2 {
+                format!("_T$CEX${}$C${}", entries[0], entries[1..].join("$C$"))
+            } else {
+                format!("_T$CEX${}", entries[0])
+            };
             let container_type = self.context.opaque_struct_type(&container_name);
             container_type.set_body(&field_types, false);
             self.existential_container_types
@@ -4033,9 +4068,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                                     let concrete_name =
                                                         self.extract_concrete_type_name(init_expr);
                                                     if let Some(ref concrete_name) = concrete_name {
-                                                        for (i, pname) in names.iter().enumerate() {
+                                                        for (i, (pkg_pname, bare_pname)) in names.iter().enumerate() {
                                                             let key = (
-                                                                pname.clone(),
+                                                                bare_pname.clone(),
                                                                 concrete_name.clone(),
                                                             );
                                                             if let Some(wt_global) = self
@@ -9435,9 +9470,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                     )?
                                     .into_pointer_value();
 
-                                for (slot, pname) in names.iter().enumerate() {
+                                for (slot, (_pkg_pname, bare_pname)) in names.iter().enumerate() {
                                     let entries =
-                                        self.compute_protocol_witness_table_entries(pname);
+                                        self.compute_protocol_witness_table_entries(bare_pname);
                                     let getter_entry = format!("{}.getter", field_name);
                                     if let Some(slot_idx) = entries
                                         .iter()
@@ -9447,7 +9482,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                         if let Some(wt) = self
                                             .protocol_witness_table_types
                                             .borrow()
-                                            .get(pname)
+                                            .get(bare_pname)
                                             .copied()
                                         {
                                             let wt_ptr_ptr = self.builder.build_struct_gep(
@@ -9480,7 +9515,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                                 .into_pointer_value();
 
                                             let getter_name = self.mangle_fn_name(
-                                                &format!("{}.{}.getter", pname, field_name),
+                                                &format!("{}.{}.getter", bare_pname, field_name),
                                                 &[],
                                             );
                                             if let Some(getter_fn) = self
@@ -10596,16 +10631,16 @@ impl<'ctx> IRGenerator<'ctx> {
                                                 )?
                                                 .into_pointer_value();
 
-                                            for (slot, pname) in names.iter().enumerate() {
+                                            for (slot, (_pkg_pname, bare_pname)) in names.iter().enumerate() {
                                                 if let Some(wt) = self
                                                     .protocol_witness_table_types
                                                     .borrow()
-                                                    .get(pname)
+                                                    .get(bare_pname)
                                                     .copied()
                                                 {
                                                     let entries = self
                                                         .compute_protocol_witness_table_entries(
-                                                            pname,
+                                                            bare_pname,
                                                         );
                                                     if let Some(slot_idx) = entries
                                                         .iter()
@@ -10649,13 +10684,13 @@ impl<'ctx> IRGenerator<'ctx> {
 
                                                         let method_fn = self
                                                             .get_protocol_method_fn_type(
-                                                                pname,
+                                                                bare_pname,
                                                                 method_name,
                                                             );
                                                         if let Some(fn_type) = method_fn {
                                                             let is_throwing = self
                                                                 .is_protocol_method_throwing(
-                                                                    pname,
+                                                                    bare_pname,
                                                                     method_name,
                                                                 );
                                                             let mut args: Vec<
@@ -11362,7 +11397,7 @@ impl<'ctx> IRGenerator<'ctx> {
                             .get_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
-                        if struct_name.starts_with("existential.")
+                        if (struct_name.starts_with("_T$EX$") || struct_name.starts_with("_T$CEX$"))
                             && struct_ty
                                 .get_field_type_at_index(0)
                                 .map_or(false, |f| f.is_pointer_type())
@@ -11371,7 +11406,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .map_or(false, |f| f.is_pointer_type())
                         {
                             let protocol_name =
-                                struct_name.strip_prefix("existential.").unwrap_or("");
+                                struct_name.rsplit('$').next().unwrap_or("");
                             let val_alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
                             self.builder.build_store(val_alloca, arg_val)?;
                             let container = self.builder.build_alloca(struct_ty, "")?;
@@ -11383,8 +11418,16 @@ impl<'ctx> IRGenerator<'ctx> {
                             let is_compound = struct_ty.get_field_type_at_index(2).is_some();
 
                             if is_compound {
-                                let protocol_names: Vec<&str> =
-                                    protocol_name.split(" & ").collect();
+                                let bare_protocol_names: Vec<String> = if struct_name.starts_with("_T$CEX$") {
+                                    let body = struct_name.trim_start_matches("_T$CEX$");
+                                    body.split("$C$")
+                                        .map(|entry| {
+                                            entry.rsplit("$$").next().unwrap_or(entry).to_string()
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![protocol_name.to_string()]
+                                };
                                 let concrete_type_name =
                                     param.expression.borrow().get_ty().ok().flatten().and_then(
                                         |ty| match &*ty.borrow() {
@@ -11400,7 +11443,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                         },
                                     );
 
-                                for (i, pn) in protocol_names.iter().enumerate() {
+                                for (i, pn) in bare_protocol_names.iter().enumerate() {
                                     let field_idx = (i + 1) as u32;
                                     let wt_ptr_ptr = self
                                         .builder
@@ -11408,7 +11451,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                     let wt_global = concrete_type_name.as_ref().and_then(|cn| {
                                         self.protocol_witness_tables
                                             .borrow()
-                                            .get(&(pn.to_string(), cn.clone()))
+                                            .get(&(pn.clone(), cn.clone()))
                                             .copied()
                                     });
                                     if let Some(wt_gv) = wt_global {

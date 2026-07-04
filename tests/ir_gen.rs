@@ -2299,7 +2299,7 @@ fn test_irgen_protocol_witness_table_for_class() {
         llvm_ir
     );
     assert!(
-        llvm_ir.contains("existential.Drawable"),
+        llvm_ir.contains("_T$EX$$$Drawable"),
         "Existential container type should exist:\n{}",
         llvm_ir
     );
@@ -2351,7 +2351,7 @@ fn test_irgen_protocol_witness_table_for_struct() {
         llvm_ir
     );
     assert!(
-        llvm_ir.contains("existential.Drawable"),
+        llvm_ir.contains("_T$EX$$$Drawable"),
         "Existential container type should exist:\n{}",
         llvm_ir
     );
@@ -2403,7 +2403,7 @@ fn test_irgen_compound_protocol_existential_dispatch() {
     let llvm_ir = module.print_to_string().to_string();
 
     assert!(
-        llvm_ir.contains("existential.Drawable & Resettable"),
+        llvm_ir.contains("_T$CEX$test$$Drawable$C$test$$Resettable"),
         "Existential container for compound type should exist:\n{}",
         llvm_ir
     );
@@ -2493,7 +2493,7 @@ fn test_irgen_some_type_return_function() {
     let llvm_ir = module.print_to_string().to_string();
 
     assert!(
-        llvm_ir.contains("existential.Drawable"),
+        llvm_ir.contains("_T$EX$$$Drawable"),
         "Existential container should exist for some Drawable return:\n{}",
         llvm_ir
     );
@@ -5695,7 +5695,7 @@ fn test_irgen_static_binary_operator_method() {
     let errors = engine_ref.get_errors();
     assert_eq!(errors.len(), 0, "Expected no errors, got: {:?}", errors);
     assert!(
-        llvm_ir.contains("_T$MyInt$+$left_right$MyInt_MyInt"),
+        llvm_ir.contains("_T$MyInt$+$left_right$test$$MyInt_test$$MyInt"),
         "Expected mangled operator +, got:\n{}",
         llvm_ir
     );
@@ -5725,7 +5725,7 @@ fn test_irgen_member_binary_operator_method() {
     let errors = engine_ref.get_errors();
     assert_eq!(errors.len(), 0, "Expected no errors, got: {:?}", errors);
     assert!(
-        llvm_ir.contains("_T$MyInt$+$other$MyInt"),
+        llvm_ir.contains("_T$MyInt$+$other$test$$MyInt"),
         "Expected mangled operator +, got:\n{}",
         llvm_ir
     );
@@ -7375,7 +7375,7 @@ fn test_irgen_struct_dynamic_member_optional_fallback() {
         engine.borrow().get_errors()
     );
     assert!(
-        llvm_ir.contains("_T$Container$subscript$getter$dynamicMember$String"),
+        llvm_ir.contains("_T$Container$subscript$getter$dynamicMember$test$$String"),
         "Expected subscript.getter in IR:\n{}",
         llvm_ir
     );
