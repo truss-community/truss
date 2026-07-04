@@ -10587,7 +10587,7 @@ impl TypeResolver {
                 let ws = symbol.as_ref()?;
                 let sym = ws.0.upgrade()?;
                 let binding = sym.borrow();
-                if let Symbol::Module { name, module, .. } = &*binding {
+                if let Symbol::Module { name, module, .. } | Symbol::Package { name, module, .. } = &*binding {
                     Some((module.clone()?, name.clone()))
                 } else {
                     None
@@ -10599,7 +10599,7 @@ impl TypeResolver {
                 let scope = parent_module.borrow().scope.clone()?;
                 let sym = scope.borrow().get_symbol(&member.value)?;
                 let binding = sym.borrow();
-                if let Symbol::Module { module, .. } = &*binding {
+                if let Symbol::Module { module, .. } | Symbol::Package { module, .. } = &*binding {
                     let path = format!("{}.{}", parent_path, member.value);
                     Some((module.clone()?, path))
                 } else {
