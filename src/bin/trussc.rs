@@ -270,6 +270,10 @@ fn main() {
         println!("{}", ir);
     }
 
+    if cli.ir && cli.output.is_none() {
+        return;
+    }
+
     let link_stdlib = modules.stdlib.as_deref();
 
     match emit::emit_output(
