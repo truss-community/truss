@@ -769,6 +769,7 @@ impl SymbolResolver {
                         decl: Some(stmt.clone()),
                         parameter_types: vec![],
                         has_parameters: !case.parameters.is_empty(),
+                        raw_value: None,
                     }));
                     cases.push(case_symbol.clone());
                     self.enter(case_symbol, &case.name);

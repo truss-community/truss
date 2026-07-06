@@ -513,6 +513,7 @@ pub struct EnumCase {
     pub token: Box<Token>,
     pub name: Box<Token>,
     pub parameters: Vec<EnumCaseParameter>,
+    pub raw_value: Option<Rc<RefCell<Expression>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

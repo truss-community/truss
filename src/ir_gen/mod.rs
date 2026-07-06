@@ -1308,6 +1308,23 @@ impl<'ctx> IRGenerator<'ctx> {
         anyhow::bail!("Case '{}' not found in enum '{}'", case_name, enum_name)
     }
 
+    fn get_enum_case_tag_value(&self, enum_name: &str, case_name: &str) -> Result<u64> {
+        if let Some(scope) = self.program_scope.borrow().as_ref()
+            && let Some(symbol) = scope.borrow().get_symbol_deep(enum_name)
+            && let Symbol::Enum { cases, .. } = &*symbol.borrow()
+        {
+            for (i, case) in cases.iter().enumerate() {
+                if case.borrow().name().as_ref().ok() == Some(&case_name.to_string()) {
+                    if let Symbol::EnumCase { raw_value, .. } = &*case.borrow() {
+                        return Ok(raw_value.unwrap_or(i as u64));
+                    }
+                    return Ok(i as u64);
+                }
+            }
+        }
+        anyhow::bail!("Case '{}' not found in enum '{}'", case_name, enum_name)
+    }
+
     fn get_enum_raw_llvm_type(&self, enum_name: &str) -> Option<BasicTypeEnum<'ctx>> {
         if let Some(scope) = self.program_scope.borrow().as_ref() {
             if let Some(symbol) = scope.borrow().get_symbol_deep(enum_name) {
@@ -5393,9 +5410,11 @@ impl<'ctx> IRGenerator<'ctx> {
                             self.builder
                                 .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
                         let tag_val = self.builder.build_load(raw_llvm_type, raw_ptr, "")?;
+                        let tag_value =
+                            self.get_enum_case_tag_value(&enum_name, &case_name.value)?;
                         let expected_tag = raw_llvm_type
                             .into_int_type()
-                            .const_int(case_idx as u64, false);
+                            .const_int(tag_value, false);
                         let match_result = self.builder.build_int_compare(
                             inkwell::IntPredicate::EQ,
                             tag_val.into_int_value(),
@@ -8270,7 +8289,9 @@ impl<'ctx> IRGenerator<'ctx> {
                             self.builder
                                 .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
                         let tag_val = self.builder.build_load(raw_ty, tag_ptr, "")?;
-                        let expected_tag = raw_ty.into_int_type().const_int(case_idx as u64, false);
+                        let tag_value =
+                            self.get_enum_case_tag_value(enum_name, &case_name.value)?;
+                        let expected_tag = raw_ty.into_int_type().const_int(tag_value, false);
                         self.builder.build_int_compare(
                             inkwell::IntPredicate::EQ,
                             tag_val.into_int_value(),
@@ -9822,9 +9843,10 @@ impl<'ctx> IRGenerator<'ctx> {
                     drop(enum_types);
 
                     if let Some(raw_llvm_type) = self.get_enum_raw_llvm_type(&enum_name) {
+                        let tag_value = self.get_enum_case_tag_value(&enum_name, &case_name)?;
                         let raw_val = raw_llvm_type
                             .into_int_type()
-                            .const_int(case_index as u64, false);
+                            .const_int(tag_value, false);
                         let alloca = self
                             .builder
                             .build_alloca(enum_llvm_type.as_basic_type_enum(), "")?;
@@ -11877,7 +11899,11 @@ impl<'ctx> IRGenerator<'ctx> {
                                     let idx =
                                         self.get_enum_case_index(&enum_name, &case_name.value)?;
                                     let expected_tag = if let Some(raw_ty) = raw_llvm_type {
-                                        raw_ty.into_int_type().const_int(idx as u64, false)
+                                        let tag_value = self.get_enum_case_tag_value(
+                                            &enum_name,
+                                            &case_name.value,
+                                        )?;
+                                        raw_ty.into_int_type().const_int(tag_value, false)
                                     } else {
                                         self.context.i8_type().const_int(idx as u64, false)
                                     };
@@ -12693,6 +12719,20 @@ impl<'ctx> IRGenerator<'ctx> {
                     let alloca = self
                         .builder
                         .build_alloca(enum_llvm_type.as_basic_type_enum(), "")?;
+
+                    if let Some(raw_llvm_type) = self.get_enum_raw_llvm_type(&enum_name) {
+                        let tag_value = self.get_enum_case_tag_value(&enum_name, &case_name)?;
+                        let raw_val = raw_llvm_type.into_int_type().const_int(tag_value, false);
+                        let raw_ptr =
+                            self.builder
+                                .build_struct_gep(enum_llvm_type, alloca, 0, "")?;
+                        self.builder.build_store(raw_ptr, raw_val)?;
+                        let val =
+                            self.builder
+                                .build_load(enum_llvm_type.as_basic_type_enum(), alloca, "")?;
+                        return Ok(Some(val));
+                    }
+
                     let tag_ptr = self
                         .builder
                         .build_struct_gep(enum_llvm_type, alloca, 0, "")?;

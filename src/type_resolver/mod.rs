@@ -657,6 +657,9 @@ impl TypeResolver {
                     );
                 }
                 if let Symbol::Enum { cases, .. } = &mut *symbol.borrow_mut() {
+                    let mut next_auto: i128 = 0;
+                    let mut seen_raw_values: std::collections::HashSet<u64> =
+                        std::collections::HashSet::new();
                     for (case_symbol, ast_case) in cases.iter().zip(ast_cases.iter()) {
                         let mut parameter_types = Vec::new();
                         for param in &ast_case.parameters {
@@ -665,12 +668,118 @@ impl TypeResolver {
                                 parameter_types.push(param_type.clone());
                             }
                         }
+
+                        let resolved_raw: Option<u64> = if let Some(rv_expr) = &ast_case.raw_value
+                        {
+                            if raw_value_type.is_none() {
+                                let diag = new_diagnostic(
+                                    TrussDiagnosticCode::TypeError,
+                                    format!(
+                                        "Enum case '{}' has a raw value but enum has no raw value type",
+                                        ast_case.name.value
+                                    ),
+                                )
+                                .with_label(primary_label_from_token(
+                                    &ast_case.name,
+                                    "Remove the raw value or add a raw value type to the enum",
+                                ));
+                                self.engine.borrow_mut().emit(diag);
+                                None
+                            } else {
+                                let val = match &*rv_expr.borrow() {
+                                    Expression::IntegerLiteral { value, .. } => Some(*value),
+                                    Expression::Unary {
+                                        operator: UnaryOperator::Minus,
+                                        expression,
+                                        ..
+                                    } => {
+                                        if let Expression::IntegerLiteral { value, .. } =
+                                            &*expression.borrow()
+                                        {
+                                            Some(-(*value))
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(v) = val {
+                                    let raw_ty_name = raw_value_type
+                                        .as_ref()
+                                        .map(|t| match &*t.borrow() {
+                                            Type::Struct(n, ..) => n.clone(),
+                                            _ => String::new(),
+                                        })
+                                        .unwrap_or_default();
+                                    let in_range = Self::check_raw_value_range(v, &raw_ty_name);
+                                    if !in_range {
+                                        let diag = new_diagnostic(
+                                            TrussDiagnosticCode::TypeError,
+                                            format!(
+                                                "Raw value {} is out of range for type '{}'",
+                                                v, raw_ty_name
+                                            ),
+                                        )
+                                        .with_label(primary_label_from_token(
+                                            &ast_case.name,
+                                            "Value does not fit in the raw value type",
+                                        ));
+                                        self.engine.borrow_mut().emit(diag);
+                                        None
+                                    } else {
+                                        let as_u64 = v as u64;
+                                        if seen_raw_values.contains(&as_u64) {
+                                            let diag = new_diagnostic(
+                                                TrussDiagnosticCode::TypeError,
+                                                format!(
+                                                    "Duplicate raw value {} for enum case '{}'",
+                                                    v, ast_case.name.value
+                                                ),
+                                            )
+                                            .with_label(primary_label_from_token(
+                                                &ast_case.name,
+                                                "Each raw value must be unique",
+                                            ));
+                                            self.engine.borrow_mut().emit(diag);
+                                        } else {
+                                            seen_raw_values.insert(as_u64);
+                                        }
+                                        next_auto = v + 1;
+                                        Some(as_u64)
+                                    }
+                                } else {
+                                    let diag = new_diagnostic(
+                                        TrussDiagnosticCode::TypeError,
+                                        format!(
+                                            "Raw value for enum case '{}' must be an integer literal",
+                                            ast_case.name.value
+                                        ),
+                                    )
+                                    .with_label(primary_label_from_token(
+                                        &ast_case.name,
+                                        "Only integer literals are supported as raw values",
+                                    ));
+                                    self.engine.borrow_mut().emit(diag);
+                                    None
+                                }
+                            }
+                        } else if raw_value_type.is_some() {
+                            let as_u64 = next_auto as u64;
+                            seen_raw_values.insert(as_u64);
+                            next_auto += 1;
+                            Some(as_u64)
+                        } else {
+                            None
+                        };
+
                         if let Symbol::EnumCase {
                             parameter_types: param_tys,
+                            raw_value,
                             ..
                         } = &mut *case_symbol.borrow_mut()
                         {
                             *param_tys = parameter_types;
+                            *raw_value = resolved_raw;
                         }
                     }
                 }
@@ -7278,6 +7387,22 @@ impl TypeResolver {
                     token,
                 );
             }
+        }
+    }
+
+    fn check_raw_value_range(value: i128, type_name: &str) -> bool {
+        match type_name {
+            "Int8" => value >= i8::MIN as i128 && value <= i8::MAX as i128,
+            "Int16" => value >= i16::MIN as i128 && value <= i16::MAX as i128,
+            "Int32" => value >= i32::MIN as i128 && value <= i32::MAX as i128,
+            "Int64" => value >= i64::MIN as i128 && value <= i64::MAX as i128,
+            "Int128" => true,
+            "UInt8" => value >= 0 && value <= u8::MAX as i128,
+            "UInt16" => value >= 0 && value <= u16::MAX as i128,
+            "UInt32" => value >= 0 && value <= u32::MAX as i128,
+            "UInt64" => value >= 0 && value <= u64::MAX as i128,
+            "UInt128" => value >= 0,
+            _ => false,
         }
     }
 
