@@ -80,6 +80,14 @@ impl Parser {
         }
     }
 
+    fn peek3(&self) -> Option<Token> {
+        if self.index + 2 < self.tokens.len() {
+            Some(self.tokens[self.index + 2].clone())
+        } else {
+            None
+        }
+    }
+
     fn next(&mut self) -> Option<Token> {
         if self.index < self.tokens.len() {
             let token = self.tokens[self.index].clone();
@@ -382,13 +390,32 @@ impl Parser {
             )
         {
             let closure = self.parse_closure_expression()?;
+            let mut params = vec![CallParameter {
+                label: None,
+                expression: Rc::new(RefCell::new(closure)),
+            }];
+            loop {
+                if let Some(first) = self.peek()
+                    && TokenType::Identifier == first.ty
+                    && let Some(second) = self.peek2()
+                    && SeparatorType::is_separator(&second, SeparatorType::Colon)
+                    && let Some(third) = self.peek3()
+                    && SeparatorType::is_separator(&third, SeparatorType::OpenBrace)
+                {
+                    self.index += 2;
+                    let closure = self.parse_closure_expression()?;
+                    params.push(CallParameter {
+                        label: Some(Box::new(first)),
+                        expression: Rc::new(RefCell::new(closure)),
+                    });
+                } else {
+                    break;
+                }
+            }
             Ok(Expression::Call {
                 callee: Rc::new(RefCell::new(expr)),
                 type_parameters: None,
-                parameters: vec![CallParameter {
-                    label: None,
-                    expression: Rc::new(RefCell::new(closure)),
-                }],
+                parameters: params,
                 overloads: vec![],
                 selected_index: None,
                 ty: None,
@@ -5119,10 +5146,24 @@ impl Parser {
                                 return Err(());
                             }
                         }
+                        let raw_value = if let Some(next) = self.peek()
+                            && matches!(
+                                next.ty,
+                                TokenType::Operator {
+                                    operator: OperatorType::Assign,
+                                }
+                            )
+                        {
+                            self.index += 1;
+                            Some(Rc::new(RefCell::new(self.parse_expression()?)))
+                        } else {
+                            None
+                        };
                         cases.push(EnumCase {
                             token: Box::new(t.clone()),
                             name: Box::new(case_name),
                             parameters,
+                            raw_value,
                         });
                         if let Some(comma_or_close) = self.peek() {
                             if SeparatorType::is_separator(&comma_or_close, SeparatorType::Comma) {
@@ -6422,6 +6463,24 @@ impl Parser {
                     label: None,
                     expression: Rc::new(RefCell::new(closure)),
                 });
+                loop {
+                    if let Some(first) = self.peek()
+                        && TokenType::Identifier == first.ty
+                        && let Some(second) = self.peek2()
+                        && SeparatorType::is_separator(&second, SeparatorType::Colon)
+                        && let Some(third) = self.peek3()
+                        && SeparatorType::is_separator(&third, SeparatorType::OpenBrace)
+                    {
+                        self.index += 2;
+                        let closure = self.parse_closure_expression()?;
+                        parameters.push(CallParameter {
+                            label: Some(Box::new(first)),
+                            expression: Rc::new(RefCell::new(closure)),
+                        });
+                    } else {
+                        break;
+                    }
+                }
             }
             Ok(Expression::Call {
                 callee: Rc::new(RefCell::new(callee)),

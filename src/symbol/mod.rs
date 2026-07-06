@@ -107,6 +107,7 @@ pub enum Symbol {
         decl: Option<Rc<RefCell<Statement>>>,
         parameter_types: Vec<Rc<RefCell<Type>>>,
         has_parameters: bool,
+        raw_value: Option<u64>,
     },
     Protocol {
         name: String,
@@ -338,6 +339,7 @@ impl PartialEq for Symbol {
                     decl: ad,
                     parameter_types: apt,
                     has_parameters: ahp,
+                    ..
                 },
                 Self::EnumCase {
                     name: b,
@@ -345,6 +347,7 @@ impl PartialEq for Symbol {
                     decl: bd,
                     parameter_types: bpt,
                     has_parameters: bhp,
+                    ..
                 },
             ) => a == b && ap == bp && ad == bd && apt == bpt && ahp == bhp,
             (

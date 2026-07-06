@@ -13883,3 +13883,88 @@ fn test_parse_single_question_error() {
     let _program = parser.parse();
     assert!(engine.borrow().has_errors());
 }
+
+#[test]
+fn test_parse_multiple_trailing_closures() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("f { } g: { }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::ExpressionStatement { expression } = &*program.statements[0].borrow()
+        && let Expression::Call { parameters, .. } = &*expression.borrow()
+    {
+        assert_eq!(parameters.len(), 2);
+        assert!(parameters[0].label.is_none());
+        assert_eq!(parameters[1].label.as_ref().unwrap().value, "g");
+    } else {
+        panic!("Expected ExpressionStatement with Call");
+    }
+}
+
+#[test]
+fn test_parse_multiple_trailing_closures_with_args() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("f(x: 1) { } g: { }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::ExpressionStatement { expression } = &*program.statements[0].borrow()
+        && let Expression::Call { parameters, .. } = &*expression.borrow()
+    {
+        assert_eq!(parameters.len(), 3);
+        assert_eq!(parameters[0].label.as_ref().unwrap().value, "x");
+        assert!(parameters[1].label.is_none());
+        assert_eq!(parameters[2].label.as_ref().unwrap().value, "g");
+    } else {
+        panic!("Expected ExpressionStatement with Call");
+    }
+}
+
+#[test]
+fn test_parse_single_trailing_closure_still_works() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("f { }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::ExpressionStatement { expression } = &*program.statements[0].borrow()
+        && let Expression::Call { parameters, .. } = &*expression.borrow()
+    {
+        assert_eq!(parameters.len(), 1);
+        assert!(parameters[0].label.is_none());
+    } else {
+        panic!("Expected ExpressionStatement with Call");
+    }
+}
+
+#[test]
+fn test_parse_chained_trailing_closures_still_works() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("arr.map { }.filter { }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::ExpressionStatement { expression } = &*program.statements[0].borrow()
+        && let Expression::Call { callee, parameters, .. } = &*expression.borrow()
+        && let Expression::MemberAccess { member, .. } = &*callee.borrow()
+    {
+        assert_eq!(member.value, "filter");
+        assert_eq!(parameters.len(), 1);
+        assert!(parameters[0].label.is_none());
+    } else {
+        panic!("Expected chained Call(filter) with trailing closure");
+    }
+}
