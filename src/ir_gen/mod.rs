@@ -354,7 +354,9 @@ impl<'ctx> IRGenerator<'ctx> {
             *self.program_scope.borrow_mut() = Some(scope);
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
-            let _ = self.run_all_passes(&all_stmts);
+            if let Err(e) = self.run_all_passes(&all_stmts) {
+                eprintln!("IR generation error: {e}");
+            }
             self.generate_main_wrapper(program);
             return IRModules {
                 main: Rc::new(self.module),
@@ -367,7 +369,9 @@ impl<'ctx> IRGenerator<'ctx> {
         *self.program_scope.borrow_mut() = Some(scope.clone());
         let saved_pkg = std::mem::replace(&mut self.package_name, "Truss".to_string());
         let saved_mod = std::mem::replace(&mut *self.module_name.borrow_mut(), String::new());
-        let _ = self.run_all_passes(stdlib_stmts);
+        if let Err(e) = self.run_all_passes(stdlib_stmts) {
+            eprintln!("IR generation error: {e}");
+        }
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
         let _ = self.module.verify();
@@ -463,7 +467,9 @@ impl<'ctx> IRGenerator<'ctx> {
 
         *self.program_scope.borrow_mut() = Some(scope);
         let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.iter().cloned().collect();
-        let _ = self.run_all_passes(&all_main);
+        if let Err(e) = self.run_all_passes(&all_main) {
+            eprintln!("IR generation error: {e}");
+        }
 
         self.generate_main_wrapper(program);
 
@@ -738,7 +744,7 @@ impl<'ctx> IRGenerator<'ctx> {
         let Some(scope) = binding.as_ref() else {
             return vec![];
         };
-        let Some(symbol) = scope.borrow().get_symbol(class_name) else {
+        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
             return vec![];
         };
 
@@ -1094,7 +1100,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn has_dynamic_member_lookup(&self, type_name: &str) -> bool {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(type_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(type_name)
         {
             let binding = symbol.borrow();
             return matches!(
@@ -1116,7 +1122,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn has_dynamic_callable(&self, type_name: &str) -> bool {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(type_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(type_name)
         {
             let binding = symbol.borrow();
             return matches!(
@@ -1138,7 +1144,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn get_stored_struct_field_index(&self, struct_name: &str, field_name: &str) -> Result<usize> {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(struct_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(struct_name)
             && let Symbol::Struct { properties, .. } = &*symbol.borrow()
         {
             let mut stored_idx = 0;
@@ -1168,7 +1174,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn get_stored_class_field_index(&self, class_name: &str, field_name: &str) -> Result<usize> {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(class_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(class_name)
         {
             let binding = symbol.borrow();
             let (decl, properties) = match &*binding {
@@ -1244,7 +1250,7 @@ impl<'ctx> IRGenerator<'ctx> {
         let Some(scope) = binding.as_ref() else {
             return 0;
         };
-        let Some(symbol) = scope.borrow().get_symbol(class_name) else {
+        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
             return 0;
         };
 
@@ -1290,7 +1296,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn get_enum_case_index(&self, enum_name: &str, case_name: &str) -> Result<usize> {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(enum_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(enum_name)
             && let Symbol::Enum { cases, .. } = &*symbol.borrow()
         {
             for (i, case) in cases.iter().enumerate() {
@@ -1304,7 +1310,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
     fn get_enum_raw_llvm_type(&self, enum_name: &str) -> Option<BasicTypeEnum<'ctx>> {
         if let Some(scope) = self.program_scope.borrow().as_ref() {
-            if let Some(symbol) = scope.borrow().get_symbol(enum_name) {
+            if let Some(symbol) = scope.borrow().get_symbol_deep(enum_name) {
                 if let Symbol::Enum { decl, .. } = &*symbol.borrow() {
                     if let Statement::EnumDecl { raw_value_type, .. } = &*decl.borrow() {
                         if let Some(raw_type) = raw_value_type {
@@ -2625,7 +2631,7 @@ impl<'ctx> IRGenerator<'ctx> {
         let Some(scope_ref) = scope.as_ref() else {
             return vec![];
         };
-        let Some(symbol) = scope_ref.borrow().get_symbol(class_name) else {
+        let Some(symbol) = scope_ref.borrow().get_symbol_deep(class_name) else {
             return vec![];
         };
         let sym_borrow = symbol.borrow();
@@ -6286,6 +6292,40 @@ impl<'ctx> IRGenerator<'ctx> {
                             sname
                         )
                     }
+                } else if let Some(sname) = self.current_struct.borrow().clone()
+                    && let Some(self_ptr) = self.lookup_variable("self")
+                    && let Some(ctype) = self.class_types.borrow().get(&sname).copied()
+                    && let Ok(idx) = self.get_stored_class_field_index(&sname, &name.value)
+                    && let Ok(field_ptr) =
+                        self.builder.build_struct_gep(ctype, self_ptr, idx as u32, "")
+                {
+                    self.declare_variable(name.value.clone(), field_ptr);
+                    let llvm_type = if let Some(ty) = ty {
+                        self.resolve_type(ty.clone())?
+                    } else {
+                        anyhow::bail!(
+                            "Cannot infer type for class field '{}'",
+                            name.value
+                        )
+                    };
+                    Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
+                } else if let Some(sname) = self.current_struct.borrow().clone()
+                    && let Some(self_ptr) = self.lookup_variable("self")
+                    && let Some(stype) = self.struct_types.borrow().get(&sname).copied()
+                    && let Ok(idx) = self.get_stored_struct_field_index(&sname, &name.value)
+                    && let Ok(field_ptr) =
+                        self.builder.build_struct_gep(stype, self_ptr, idx as u32, "")
+                {
+                    self.declare_variable(name.value.clone(), field_ptr);
+                    let llvm_type = if let Some(ty) = ty {
+                        self.resolve_type(ty.clone())?
+                    } else {
+                        anyhow::bail!(
+                            "Cannot infer type for struct field '{}'",
+                            name.value
+                        )
+                    };
+                    Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
                 } else if let Some(fn_val) = self.module.get_function(&name.value).or_else(|| {
                     self.mangled_fn_names
                         .borrow()
@@ -7418,6 +7458,36 @@ impl<'ctx> IRGenerator<'ctx> {
                         };
                         let val = self.builder.build_load(ty, field_ptr, "")?;
                         (field_ptr, Some(val))
+                    } else if let Some(sname) = self.current_struct.borrow().clone()
+                        && let Some(self_ptr) = self.lookup_variable("self")
+                        && let Some(ctype) = self.class_types.borrow().get(&sname).copied()
+                        && let Ok(idx) = self.get_stored_class_field_index(&sname, &name)
+                        && let Ok(field_ptr) =
+                            self.builder.build_struct_gep(ctype, self_ptr, idx as u32, "")
+                    {
+                        self.declare_variable(name.clone(), field_ptr);
+                        let ty = if let Some(ty_rc) = ty_opt.clone() {
+                            self.resolve_type(ty_rc)?
+                        } else {
+                            self.context.i32_type().into()
+                        };
+                        let val = self.builder.build_load(ty, field_ptr, "")?;
+                        (field_ptr, Some(val))
+                    } else if let Some(sname) = self.current_struct.borrow().clone()
+                        && let Some(self_ptr) = self.lookup_variable("self")
+                        && let Some(stype) = self.struct_types.borrow().get(&sname).copied()
+                        && let Ok(idx) = self.get_stored_struct_field_index(&sname, &name)
+                        && let Ok(field_ptr) =
+                            self.builder.build_struct_gep(stype, self_ptr, idx as u32, "")
+                    {
+                        self.declare_variable(name.clone(), field_ptr);
+                        let ty = if let Some(ty_rc) = ty_opt.clone() {
+                            self.resolve_type(ty_rc)?
+                        } else {
+                            self.context.i32_type().into()
+                        };
+                        let val = self.builder.build_load(ty, field_ptr, "")?;
+                        (field_ptr, Some(val))
                     } else {
                         self.emit_error(
                             TrussDiagnosticCode::UndefinedVariable,
@@ -7765,9 +7835,23 @@ impl<'ctx> IRGenerator<'ctx> {
                                         &format!("{}.{}.setter", owner, field_name),
                                         &[],
                                     );
+                                    let saved_mod = self.module_name.borrow().clone();
                                     let declared_fn = self
                                         .module
                                         .get_function(&declared_fn_name)
+                                        .or_else(|| {
+                                            if !saved_mod.is_empty() {
+                                                *self.module_name.borrow_mut() = String::new();
+                                                let alt_name = self.mangle_fn_name(
+                                                    &format!("{}.{}.setter", owner, field_name),
+                                                    &[],
+                                                );
+                                                *self.module_name.borrow_mut() = saved_mod.clone();
+                                                self.module.get_function(&alt_name)
+                                            } else {
+                                                None
+                                            }
+                                        })
                                         .ok_or_else(|| {
                                         anyhow::anyhow!(
                                             "Setter function {} not found",
@@ -9315,9 +9399,23 @@ impl<'ctx> IRGenerator<'ctx> {
                                         &format!("{}.{}.getter", fb_owner, field_name),
                                         &[],
                                     );
+                                    let fb_saved_mod = self.module_name.borrow().clone();
                                     let fb_declared_fn = self
                                         .module
                                         .get_function(&fb_declared_fn_name)
+                                        .or_else(|| {
+                                            if !fb_saved_mod.is_empty() {
+                                                *self.module_name.borrow_mut() = String::new();
+                                                let alt_name = self.mangle_fn_name(
+                                                    &format!("{}.{}.getter", fb_owner, field_name),
+                                                    &[],
+                                                );
+                                                *self.module_name.borrow_mut() = fb_saved_mod.clone();
+                                                self.module.get_function(&alt_name)
+                                            } else {
+                                                None
+                                            }
+                                        })
                                         .ok_or_else(|| {
                                             anyhow::anyhow!(
                                                 "Getter function {} not found",
@@ -9443,32 +9541,42 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .into_pointer_value();
 
                             let method_list = self.compute_vtable_method_list(&class_name);
-                            let (_, owner) = method_list
+                            if let Some((_, owner)) = method_list
                                 .iter()
                                 .find(|(n, _)| n == &getter_entry)
-                                .unwrap();
-                            let declared_fn_name = self
-                                .mangle_fn_name(&format!("{}.{}.getter", owner, field_name), &[]);
-                            let declared_fn =
-                                self.module.get_function(&declared_fn_name).ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Getter function {} not found",
-                                        declared_fn_name
-                                    )
-                                })?;
-                            let fn_type = declared_fn.get_type();
-
-                            let result = self.builder.build_indirect_call(
-                                fn_type,
-                                fn_ptr_val,
-                                &[class_ptr.into()],
-                                "",
-                            )?;
-                            let result_val = match result.try_as_basic_value() {
-                                inkwell::values::ValueKind::Basic(val) => val,
-                                _ => anyhow::bail!("Getter call did not return a value"),
-                            };
-                            return Ok(Some(result_val));
+                            {
+                                let declared_fn_name = self
+                                    .mangle_fn_name(&format!("{}.{}.getter", owner, field_name), &[]);
+                                let saved_mod = self.module_name.borrow().clone();
+                                let declared_fn = self.module.get_function(&declared_fn_name)
+                                    .or_else(|| {
+                                        if !saved_mod.is_empty() {
+                                            *self.module_name.borrow_mut() = String::new();
+                                            let alt_name = self.mangle_fn_name(
+                                                &format!("{}.{}.getter", owner, field_name),
+                                                &[],
+                                            );
+                                            *self.module_name.borrow_mut() = saved_mod.clone();
+                                            self.module.get_function(&alt_name)
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some(declared_fn) = declared_fn {
+                                    let fn_type = declared_fn.get_type();
+                                    let result = self.builder.build_indirect_call(
+                                        fn_type,
+                                        fn_ptr_val,
+                                        &[class_ptr.into()],
+                                        "",
+                                    )?;
+                                    let result_val = match result.try_as_basic_value() {
+                                        inkwell::values::ValueKind::Basic(val) => val,
+                                        _ => anyhow::bail!("Getter call did not return a value"),
+                                    };
+                                    return Ok(Some(result_val));
+                                }
+                            }
                         }
                     }
 
@@ -13217,7 +13325,7 @@ impl<'ctx> IRGenerator<'ctx> {
         field_name: &str,
     ) -> Result<BasicTypeEnum<'ctx>> {
         if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol(struct_name)
+            && let Some(symbol) = scope.borrow().get_symbol_deep(struct_name)
         {
             let binding = symbol.borrow();
             let (decl, properties) = match &*binding {

@@ -68,6 +68,40 @@ impl Scope {
         }
     }
 
+    pub fn get_symbol_deep(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+        if let Some(symbol) = self.get_symbol(name) {
+            return Some(symbol);
+        }
+        let module_symbols: Vec<Rc<RefCell<Symbol>>> = self
+            .name_table
+            .values()
+            .filter(|s| {
+                matches!(
+                    &*s.borrow(),
+                    Symbol::Module {
+                        module: Some(_),
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect();
+        for sym in module_symbols {
+            if let Symbol::Module {
+                module: Some(module),
+                ..
+            } = &*sym.borrow()
+            {
+                if let Some(module_scope) = module.borrow().scope.clone()
+                    && let Some(found) = module_scope.borrow().get_symbol_deep(name)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
     pub fn get_symbol_qualified(&self, path: &str) -> Option<Rc<RefCell<Symbol>>> {
         let (head, tail) = match path.split_once('.') {
             Some((h, t)) => (h, Some(t)),
