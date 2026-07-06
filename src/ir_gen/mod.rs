@@ -1294,6 +1294,188 @@ impl<'ctx> IRGenerator<'ctx> {
         count
     }
 
+    fn get_superclass_name(&self, class_name: &str) -> Option<String> {
+        let binding = self.program_scope.borrow();
+        let scope = binding.as_ref()?;
+        let symbol = scope.borrow().get_symbol_deep(class_name)?;
+        let sym_borrow = symbol.borrow();
+        let Symbol::Class { decl, .. } = &*sym_borrow else {
+            return None;
+        };
+        let decl_borrow = decl.borrow();
+        if let Statement::ClassDecl {
+            superclass: Some(super_expr),
+            ..
+        } = &*decl_borrow
+        {
+            if let Expression::Type {
+                name: super_name, ..
+            } = &*super_expr.borrow()
+            {
+                return Some(super_name.value.clone());
+            }
+        }
+        None
+    }
+
+    fn emit_own_property_initialization(
+        &self,
+        class_name: &str,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<()> {
+        let binding = self.program_scope.borrow();
+        let Some(scope) = binding.as_ref() else {
+            return Ok(());
+        };
+        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
+            return Ok(());
+        };
+        let sym_borrow = symbol.borrow();
+        let properties = match &*sym_borrow {
+            Symbol::Class { properties, .. } => properties.clone(),
+            _ => return Ok(()),
+        };
+        drop(sym_borrow);
+        let Some(class_type) = self.class_types.borrow().get(class_name).cloned() else {
+            return Ok(());
+        };
+        for field in properties.iter() {
+            let field_borrow = field.borrow();
+            let Ok(Some(field_decl)) = field_borrow.get_decl() else {
+                continue;
+            };
+            drop(field_borrow);
+            let field_decl_borrow = field_decl.borrow();
+            let Statement::VariableDecl {
+                name: field_name,
+                accessors,
+                initializer,
+                ty: field_ty,
+                ..
+            } = &*field_decl_borrow
+            else {
+                continue;
+            };
+            let has_get_set = accessors
+                .iter()
+                .any(|a| matches!(a.kind, AccessorKind::Get | AccessorKind::Set));
+            if has_get_set {
+                continue;
+            }
+            let field_name_str = field_name.value.clone();
+            let init_expr = initializer.clone();
+            let resolved_ty = field_ty.clone();
+            drop(field_decl_borrow);
+            let Ok(field_idx) = self.get_stored_class_field_index(class_name, &field_name_str)
+            else {
+                continue;
+            };
+            let Ok(field_ptr) =
+                self.builder
+                    .build_struct_gep(class_type, self_ptr, field_idx as u32, "")
+            else {
+                continue;
+            };
+            if let Some(init) = init_expr {
+                if let Ok(Some(val)) = self.resolve_expression(init) {
+                    let _ = self.builder.build_store(field_ptr, val);
+                }
+            } else if let Some(ty) = resolved_ty {
+                if let Ok(llvm_ty) = self.resolve_type(ty) {
+                    let zero = llvm_ty.const_zero();
+                    let _ = self.builder.build_store(field_ptr, zero);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_own_property_destruction(
+        &self,
+        class_name: &str,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<()> {
+        let binding = self.program_scope.borrow();
+        let Some(scope) = binding.as_ref() else {
+            return Ok(());
+        };
+        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
+            return Ok(());
+        };
+        let sym_borrow = symbol.borrow();
+        let properties = match &*sym_borrow {
+            Symbol::Class { properties, .. } => properties.clone(),
+            _ => return Ok(()),
+        };
+        drop(sym_borrow);
+        let Some(class_type) = self.class_types.borrow().get(class_name).cloned() else {
+            return Ok(());
+        };
+        for field in properties.iter().rev() {
+            let field_borrow = field.borrow();
+            let Ok(Some(field_decl)) = field_borrow.get_decl() else {
+                continue;
+            };
+            drop(field_borrow);
+            let field_decl_borrow = field_decl.borrow();
+            let Statement::VariableDecl {
+                name: field_name,
+                accessors,
+                ty: field_ty,
+                ..
+            } = &*field_decl_borrow
+            else {
+                continue;
+            };
+            let has_get_set = accessors
+                .iter()
+                .any(|a| matches!(a.kind, AccessorKind::Get | AccessorKind::Set));
+            if has_get_set {
+                continue;
+            }
+            let field_name_str = field_name.value.clone();
+            let resolved_ty = field_ty.clone();
+            drop(field_decl_borrow);
+            let Ok(field_idx) = self.get_stored_class_field_index(class_name, &field_name_str)
+            else {
+                continue;
+            };
+            let Ok(field_ptr) =
+                self.builder
+                    .build_struct_gep(class_type, self_ptr, field_idx as u32, "")
+            else {
+                continue;
+            };
+            let Some(ty) = resolved_ty else { continue };
+            let ty_borrow = ty.borrow();
+            let type_name = match &*ty_borrow {
+                Type::Struct(name, ..) => Some(name.clone()),
+                Type::Enum(name, ..) => Some(name.clone()),
+                Type::Class(name, ..) => Some(name.clone()),
+                _ => None,
+            };
+            drop(ty_borrow);
+            let Some(tname) = type_name else { continue };
+            if self.class_types.borrow().contains_key(tname.as_str()) {
+                let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                if let Ok(loaded) = self.builder.build_load(ptr_ty, field_ptr, "") {
+                    let _ = self.emit_release(loaded.into_pointer_value());
+                }
+            } else {
+                let deinit_name = self
+                    .mangled_fn_names
+                    .borrow()
+                    .get(&format!("{}.deinit", tname))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{}.deinit", tname));
+                if let Some(deinit_fn) = self.module.get_function(&deinit_name) {
+                    let _ = self.builder.build_call(deinit_fn, &[field_ptr.into()], "");
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn get_enum_case_index(&self, enum_name: &str, case_name: &str) -> Result<usize> {
         if let Some(scope) = self.program_scope.borrow().as_ref()
             && let Some(symbol) = scope.borrow().get_symbol_deep(enum_name)
@@ -5060,6 +5242,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     let is_class_init = self.class_types.borrow().contains_key(&struct_name);
                     if !is_class_init {
                         self.auto_assign_init_fields(&struct_name, self_ptr, parameters);
+                    } else {
+                        self.emit_own_property_initialization(&struct_name, self_ptr)?;
                     }
 
                     let is_failable = *is_failable;
@@ -5142,6 +5326,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     let self_ptr = self_ptr.into_pointer_value();
                     self.declare_variable("self".to_string(), self_ptr);
 
+                    let is_class_deinit =
+                        self.class_types.borrow().contains_key(&struct_name);
                     match &*body.borrow() {
                         FunctionBody::Statements(stmts) => {
                             self.enter_scope_with_stmts(stmts)?;
@@ -5151,14 +5337,56 @@ impl<'ctx> IRGenerator<'ctx> {
                                     break;
                                 }
                             }
+                            if is_class_deinit {
+                                self.emit_own_property_destruction(&struct_name, self_ptr)?;
+                                if let Some(ref sname) =
+                                    self.get_superclass_name(&struct_name)
+                                {
+                                    let sdeinit = self
+                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                    if let Some(sfn) = self.module.get_function(&sdeinit) {
+                                        let _ = self
+                                            .builder
+                                            .build_call(sfn, &[self_ptr.into()], "");
+                                    }
+                                }
+                            }
                             self.builder.build_return(None)?;
                             self.exit_scope();
                         }
                         FunctionBody::Expression(expr) => {
                             self.resolve_expression(expr.clone())?;
+                            if is_class_deinit {
+                                self.emit_own_property_destruction(&struct_name, self_ptr)?;
+                                if let Some(ref sname) =
+                                    self.get_superclass_name(&struct_name)
+                                {
+                                    let sdeinit = self
+                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                    if let Some(sfn) = self.module.get_function(&sdeinit) {
+                                        let _ = self
+                                            .builder
+                                            .build_call(sfn, &[self_ptr.into()], "");
+                                    }
+                                }
+                            }
                             self.builder.build_return(None)?;
                         }
                         FunctionBody::None => {
+                            if is_class_deinit {
+                                self.emit_own_property_destruction(&struct_name, self_ptr)?;
+                                if let Some(ref sname) =
+                                    self.get_superclass_name(&struct_name)
+                                {
+                                    let sdeinit = self
+                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                    if let Some(sfn) = self.module.get_function(&sdeinit) {
+                                        let _ = self
+                                            .builder
+                                            .build_call(sfn, &[self_ptr.into()], "");
+                                    }
+                                }
+                            }
                             self.builder.build_return(None)?;
                         }
                     }
@@ -5322,6 +5550,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                 self.builder.position_at_end(entry);
                                 let self_ptr =
                                     func.get_nth_param(0).unwrap().into_pointer_value();
+                                self.emit_own_property_destruction(&name.value, self_ptr)?;
                                 if let Some(ref super_name) = superclass_name {
                                     let super_deinit = self
                                         .mangle_fn_name(&format!("{}.deinit", super_name), &[]);
@@ -5367,6 +5596,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                             .build_call(super_fn, &[self_ptr.into()], "");
                                     }
                                 }
+                                self.emit_own_property_initialization(&name.value, self_ptr)?;
                                 self.builder.build_return(None)?;
                                 if let Some(block) = current_block {
                                     self.builder.position_at_end(block);
