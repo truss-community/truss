@@ -2189,6 +2189,35 @@ impl<'ctx> IRGenerator<'ctx> {
                     }
                 }
             }
+            let has_init = body.iter().any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
+            let has_deinit =
+                body.iter().any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
+            if !has_deinit {
+                let deinit_name = self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
+                self.register_mangled_name(&format!("{}.deinit", name.value), &deinit_name);
+                if self.module.get_function(&deinit_name).is_none() {
+                    let void_ty = Rc::new(RefCell::new(Type::Void));
+                    let self_param = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(
+                        Type::Void,
+                    )))));
+                    if let Ok(fn_type) = self.get_function_type(void_ty, vec![self_param], false) {
+                        self.module.add_function(&deinit_name, fn_type, None);
+                    }
+                }
+            }
+            if !has_init {
+                let init_name = self.mangle_fn_name(&format!("{}.init", name.value), &[]);
+                self.register_mangled_name(&format!("{}.init", name.value), &init_name);
+                if self.module.get_function(&init_name).is_none() {
+                    let void_ty = Rc::new(RefCell::new(Type::Void));
+                    let self_param = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(
+                        Type::Void,
+                    )))));
+                    if let Ok(fn_type) = self.get_function_type(void_ty, vec![self_param], false) {
+                        self.module.add_function(&init_name, fn_type, None);
+                    }
+                }
+            }
         }
         if let Statement::EnumDecl { name, body, .. } = &*statement.borrow() {
             for stmt in body {
@@ -5260,6 +5289,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 name,
                 body,
                 generic_parameters,
+                superclass,
                 ..
             } => {
                 let prev = self.current_struct.borrow_mut().take();
@@ -5270,6 +5300,79 @@ impl<'ctx> IRGenerator<'ctx> {
                 let result = (|| -> Result<bool> {
                     for stmt in body {
                         self.resolve_statement(stmt.clone())?;
+                    }
+                    let has_init =
+                        body.iter().any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
+                    let has_deinit =
+                        body.iter().any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
+                    let superclass_name = superclass.as_ref().and_then(|se| {
+                        if let Expression::Type { name: sn, .. } = &*se.borrow() {
+                            Some(sn.value.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if !has_deinit {
+                        let fn_name =
+                            self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
+                        if let Some(func) = self.module.get_function(&fn_name) {
+                            if func.count_basic_blocks() == 0 {
+                                let current_block = self.builder.get_insert_block();
+                                let entry = self.context.append_basic_block(func, "entry");
+                                self.builder.position_at_end(entry);
+                                let self_ptr =
+                                    func.get_nth_param(0).unwrap().into_pointer_value();
+                                if let Some(ref super_name) = superclass_name {
+                                    let super_deinit = self
+                                        .mangle_fn_name(&format!("{}.deinit", super_name), &[]);
+                                    if let Some(super_fn) =
+                                        self.module.get_function(&super_deinit)
+                                    {
+                                        let _ = self
+                                            .builder
+                                            .build_call(super_fn, &[self_ptr.into()], "");
+                                    }
+                                }
+                                self.builder.build_return(None)?;
+                                if let Some(block) = current_block {
+                                    self.builder.position_at_end(block);
+                                }
+                            }
+                        }
+                    }
+                    if !has_init {
+                        let fn_name =
+                            self.mangle_fn_name(&format!("{}.init", name.value), &[]);
+                        if let Some(func) = self.module.get_function(&fn_name) {
+                            if func.count_basic_blocks() == 0 {
+                                let current_block = self.builder.get_insert_block();
+                                let entry = self.context.append_basic_block(func, "entry");
+                                self.builder.position_at_end(entry);
+                                let self_ptr =
+                                    func.get_nth_param(0).unwrap().into_pointer_value();
+                                if let Some(ref super_name) = superclass_name {
+                                    let super_init_base = format!("{}.init", super_name);
+                                    let super_init = {
+                                        let names = self.mangled_fn_names.borrow();
+                                        names.get(&super_init_base).cloned()
+                                    }
+                                    .unwrap_or_else(|| {
+                                        self.mangle_fn_name(&super_init_base, &[])
+                                    });
+                                    if let Some(super_fn) =
+                                        self.module.get_function(&super_init)
+                                    {
+                                        let _ = self
+                                            .builder
+                                            .build_call(super_fn, &[self_ptr.into()], "");
+                                    }
+                                }
+                                self.builder.build_return(None)?;
+                                if let Some(block) = current_block {
+                                    self.builder.position_at_end(block);
+                                }
+                            }
+                        }
                     }
                     Ok(false)
                 })();
