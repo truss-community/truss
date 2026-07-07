@@ -72,7 +72,7 @@ impl Scope {
         if let Some(symbol) = self.get_symbol(name) {
             return Some(symbol);
         }
-        let module_symbols: Vec<Rc<RefCell<Symbol>>> = self
+        let container_symbols: Vec<Rc<RefCell<Symbol>>> = self
             .name_table
             .values()
             .filter(|s| {
@@ -81,17 +81,27 @@ impl Scope {
                     Symbol::Module {
                         module: Some(_),
                         ..
+                    } | Symbol::Package {
+                        module: Some(_),
+                        ..
                     }
                 )
             })
             .cloned()
             .collect();
-        for sym in module_symbols {
-            if let Symbol::Module {
-                module: Some(module),
-                ..
-            } = &*sym.borrow()
-            {
+        for sym in container_symbols {
+            let module_opt = match &*sym.borrow() {
+                Symbol::Module {
+                    module: Some(module),
+                    ..
+                } => Some(module.clone()),
+                Symbol::Package {
+                    module: Some(module),
+                    ..
+                } => Some(module.clone()),
+                _ => None,
+            };
+            if let Some(module) = module_opt {
                 if let Some(module_scope) = module.borrow().scope.clone()
                     && let Some(found) = module_scope.borrow().get_symbol_deep(name)
                 {
