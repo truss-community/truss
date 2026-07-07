@@ -1636,6 +1636,7 @@ impl TypeResolver {
                 scope,
                 ty,
                 mutating,
+                generic_parameters,
                 ..
             } => {
                 let last_return_type = self.current_return_type.clone();
@@ -1659,6 +1660,21 @@ impl TypeResolver {
                 self.current_return_type = Some(ret_type.clone());
                 self.enter_scope(scope.as_ref().unwrap().clone());
                 self.initialized_lets.push(HashSet::new());
+
+                for gp in generic_parameters {
+                    if let GenericParameterKind::Type { constraints } = &gp.kind {
+                        if !constraints.is_empty() {
+                            let resolved: Vec<Rc<RefCell<Type>>> = constraints
+                                .iter()
+                                .filter_map(|c| self.infer_type(c.clone()))
+                                .collect();
+                            if !resolved.is_empty() {
+                                self.generic_param_constraints
+                                    .insert(gp.name.value.clone(), resolved);
+                            }
+                        }
+                    }
+                }
 
                 for param in parameters.iter() {
                     if let Some(param_ty) = param.borrow().ty.clone() {
@@ -2980,6 +2996,12 @@ impl TypeResolver {
                     selected_index,
                 ) {
                     result
+                } else if matches!(&*left_ty.borrow(), Type::GenericParam(_)) {
+                    Rc::new(RefCell::new(Type::Struct(
+                        "Bool".to_string(),
+                        WeakSymbol(std::rc::Weak::new()),
+                        vec![],
+                    )))
                 } else {
                     let token = left.borrow().token();
                     self.emit_error(
@@ -7882,10 +7904,12 @@ impl TypeResolver {
             | BinaryOperator::GreaterEqual => {
                 let left_ty = left.borrow().clone();
                 let right_ty = right.borrow().clone();
+                if matches!(&left_ty, Type::GenericParam(_))
+                    || matches!(&right_ty, Type::GenericParam(_))
+                {
+                    return None;
+                }
                 let compatible = match (&left_ty, &right_ty) {
-                    (Type::GenericParam(l), Type::GenericParam(r)) => l == r,
-                    (Type::GenericParam(..), _) => true,
-                    (_, Type::GenericParam(..)) => true,
                     (Type::Protocol(n1, ..), Type::Protocol(n2, ..)) if n1 == n2 => true,
                     (l, r) if Self::is_integer_type(l) && Self::is_integer_type(r) => true,
                     _ => left_ty == right_ty,
@@ -8355,6 +8379,58 @@ impl TypeResolver {
         bin_overloads: &mut Vec<Rc<RefCell<Symbol>>>,
         bin_selected: &mut Option<usize>,
     ) -> Option<Rc<RefCell<Type>>> {
+        if let Type::GenericParam(gp_name) = &*left_ty.borrow() {
+            let gp_name = gp_name.clone();
+            let constraints = self.generic_param_constraints.get(&gp_name)?.clone();
+            let op_name = operator.operator_name().to_string();
+            for constraint_ty in &constraints {
+                let protocol_names: Vec<String> = match &*constraint_ty.borrow() {
+                    Type::Protocol(n, ..) => vec![n.clone()],
+                    Type::Compound(types) => types
+                        .iter()
+                        .filter_map(|t| {
+                            if let Type::Protocol(n, ..) = &*t.borrow() {
+                                Some(n.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => continue,
+                };
+                for protocol_name in protocol_names {
+                    let matching = {
+                        let scope = self.current_scope.as_ref()?.borrow();
+                        let sym = scope.get_symbol(&protocol_name)?;
+                        let methods = match &*sym.borrow() {
+                            Symbol::Protocol { methods, .. } => methods.clone(),
+                            _ => return None,
+                        };
+                        let filtered: Vec<Rc<RefCell<Symbol>>> = methods
+                            .iter()
+                            .filter(|m| {
+                                let b = m.borrow();
+                                b.name().as_ref().ok() == Some(&op_name)
+                            })
+                            .cloned()
+                            .collect();
+                        filtered
+                    };
+                    if !matching.is_empty() {
+                        *bin_overloads = matching;
+                        *bin_selected = Some(0);
+                        let _ = right;
+                        let _ = left;
+                        return Some(Rc::new(RefCell::new(Type::Struct(
+                            "Bool".to_string(),
+                            WeakSymbol(std::rc::Weak::new()),
+                            vec![],
+                        ))));
+                    }
+                }
+            }
+            return None;
+        }
         let type_name = match &*left_ty.borrow() {
             Type::Struct(n, ..) | Type::Class(n, ..) | Type::Enum(n, ..) => n.clone(),
             _ => return None,

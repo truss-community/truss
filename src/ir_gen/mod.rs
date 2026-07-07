@@ -6834,6 +6834,110 @@ impl<'ctx> IRGenerator<'ctx> {
                 {
                     let sym = &overloads[idx];
                     let op_name = operator.operator_name().to_string();
+
+                    let is_protocol_method = matches!(
+                        &*sym.borrow(),
+                        Symbol::ProtocolMethod { .. }
+                    );
+
+                    if is_protocol_method {
+                        let protocol_name = {
+                            let sym_borrow = sym.borrow();
+                            if let Symbol::ProtocolMethod { parent, .. } = &*sym_borrow {
+                                parent
+                                    .0
+                                    .upgrade()
+                                    .and_then(|p| p.borrow().name().ok())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(protocol_name) = protocol_name {
+                            let base = format!("{}.{}", protocol_name, op_name);
+                            let fn_name = self
+                                .mangled_fn_names
+                                .borrow()
+                                .get(&base)
+                                .cloned()
+                                .or_else(|| {
+                                    let params = vec![
+                                        CallParameter {
+                                            label: None,
+                                            expression: left.clone(),
+                                        },
+                                        CallParameter {
+                                            label: None,
+                                            expression: right.clone(),
+                                        },
+                                    ];
+                                    self.mangle_from_overload(&base, sym, &params)
+                                });
+
+                            if let Some(fn_name) = fn_name {
+                                if let Some(f) = self.module.get_function(&fn_name) {
+                                    let left_val = self.resolve_expression(left.clone())?.unwrap();
+                                    let right_val = self.resolve_expression(right.clone())?.unwrap();
+
+                                    let left_ptr = if let BasicValueEnum::PointerValue(p) = left_val {
+                                        p
+                                    } else {
+                                        let alloca = self.builder.build_alloca(left_val.get_type(), "")?;
+                                        self.builder.build_store(alloca, left_val)?;
+                                        alloca
+                                    };
+                                    let right_ptr = if let BasicValueEnum::PointerValue(p) = right_val {
+                                        p
+                                    } else {
+                                        let alloca = self.builder.build_alloca(right_val.get_type(), "")?;
+                                        self.builder.build_store(alloca, right_val)?;
+                                        alloca
+                                    };
+
+                                    let param_types = f.get_type().get_param_types();
+                                    let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+                                    args.push(left_ptr.into());
+
+                                    if param_types.len() > 2 {
+                                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                        let err_alloca = self.builder.build_alloca(ptr_ty, "call_err")?;
+                                        self.builder.build_store(err_alloca, ptr_ty.const_null())?;
+                                        args.push(err_alloca.into());
+                                    }
+
+                                    let rhs_arg = if param_types.len() >= 2 {
+                                        let rhs_idx = if param_types.len() >= 3 { 2 } else { 1 };
+                                        let rhs_expected_type = param_types[rhs_idx];
+                                        if rhs_expected_type.is_pointer_type() {
+                                            right_ptr.into()
+                                        } else if rhs_expected_type.is_struct_type() {
+                                            let st = rhs_expected_type.into_struct_type();
+                                            let alloca = self.builder.build_alloca(st, "")?;
+                                            let field0 = self.builder.build_struct_gep(st, alloca, 0, "")?;
+                                            self.builder.build_store(field0, right_ptr)?;
+                                            let field1 = self.builder.build_struct_gep(st, alloca, 1, "")?;
+                                            let null_ptr = self.context.ptr_type(inkwell::AddressSpace::from(0)).const_null();
+                                            self.builder.build_store(field1, null_ptr)?;
+                                            let loaded = self.builder.build_load(st, alloca, "")?;
+                                            loaded.into()
+                                        } else {
+                                            right_ptr.into()
+                                        }
+                                    } else {
+                                        right_ptr.into()
+                                    };
+                                    args.push(rhs_arg);
+
+                                    let call_result = self.builder.build_call(f, &args, "")?;
+                                    match call_result.try_as_basic_value() {
+                                        inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                                        _ => return Ok(None),
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let is_static = sym.borrow().get_decl().ok().flatten().is_some_and(|d| {
                         if let Statement::FunctionDecl { static_method, .. } = &*d.borrow() {
                             *static_method
@@ -7432,6 +7536,8 @@ impl<'ctx> IRGenerator<'ctx> {
                             Ok(Some(self.builder.build_int_neg(v, "")?.into()))
                         } else if let BasicValueEnum::FloatValue(v) = expr_val {
                             Ok(Some(self.builder.build_float_neg(v, "")?.into()))
+                        } else if let BasicValueEnum::PointerValue(_) = expr_val {
+                            Ok(Some(expr_val))
                         } else {
                             anyhow::bail!("Invalid type for unary minus");
                         }
