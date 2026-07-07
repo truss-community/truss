@@ -367,6 +367,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 );
                 eprintln!("IR generation error: {msg}");
             }
+            self.fix_missing_terminators();
             self.generate_main_wrapper(program);
             return IRModules {
                 main: Rc::new(self.module),
@@ -392,6 +393,7 @@ impl<'ctx> IRGenerator<'ctx> {
             );
             eprintln!("IR generation error: {msg}");
         }
+        self.fix_missing_terminators();
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
         let _ = self.module.verify();
@@ -500,6 +502,7 @@ impl<'ctx> IRGenerator<'ctx> {
             );
             eprintln!("IR generation error: {msg}");
         }
+        self.fix_missing_terminators();
 
         self.generate_main_wrapper(program);
 
@@ -567,15 +570,25 @@ impl<'ctx> IRGenerator<'ctx> {
         for stmt in stmts {
             self.resolve_statement(stmt.clone())?;
         }
-        // After all compilation, fix any blocks missing terminators across all functions
+        self.fix_missing_terminators();
+        Ok(())
+    }
+
+    fn fix_missing_terminators(&self) {
         for func in self.module.get_functions() {
             for bb in func.get_basic_blocks() {
                 if bb.get_terminator().is_none() {
-                    let return_type = func.get_type().get_return_type();
                     self.builder.position_at_end(bb);
-                    if return_type.is_some() {
-                        let zero: BasicValueEnum<'ctx> =
-                            self.context.i32_type().const_zero().into();
+                    if let Some(ret_type) = func.get_type().get_return_type() {
+                        let zero: BasicValueEnum<'ctx> = match ret_type {
+                            BasicTypeEnum::IntType(t) => t.const_zero().into(),
+                            BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+                            BasicTypeEnum::PointerType(t) => t.const_null().into(),
+                            BasicTypeEnum::StructType(t) => t.const_zero().into(),
+                            BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+                            BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+                            BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+                        };
                         let _ = self.builder.build_return(Some(&zero));
                     } else {
                         let _ = self.builder.build_return(None);
@@ -583,7 +596,6 @@ impl<'ctx> IRGenerator<'ctx> {
                 }
             }
         }
-        Ok(())
     }
 
     fn declare_struct_types(&self, statement: Rc<RefCell<Statement>>) {
@@ -5202,9 +5214,16 @@ impl<'ctx> IRGenerator<'ctx> {
                                 let _ = self.builder.build_return(None);
                             } else {
                                 let fn_ty = function.get_type();
-                                if fn_ty.get_return_type().is_some() {
-                                    let zero: BasicValueEnum<'ctx> =
-                                        self.context.i32_type().const_zero().into();
+                                if let Some(ret_type) = fn_ty.get_return_type() {
+                                    let zero: BasicValueEnum<'ctx> = match ret_type {
+                                        BasicTypeEnum::IntType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::FloatType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::PointerType(t) => t.const_null().into(),
+                                        BasicTypeEnum::StructType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::VectorType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+                                    };
                                     let _ = self.builder.build_return(Some(&zero));
                                 } else {
                                     let _ = self.builder.build_return(None);
