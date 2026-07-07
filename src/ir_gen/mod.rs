@@ -11191,8 +11191,13 @@ impl<'ctx> IRGenerator<'ctx> {
                                             class_name
                                         );
                                     };
+                                    let base_name_vtable = format!("{}.{}", owner, method_name);
                                     let fn_name = self
-                                        .mangle_fn_name(&format!("{}.{}", owner, method_name), &[]);
+                                        .mangled_fn_names
+                                        .borrow()
+                                        .get(&base_name_vtable)
+                                        .cloned()
+                                        .unwrap_or_else(|| self.mangle_fn_name(&base_name_vtable, &[]));
                                     let declared_fn =
                                         self.module.get_function(&fn_name).ok_or_else(|| {
                                             self.emit_error(
