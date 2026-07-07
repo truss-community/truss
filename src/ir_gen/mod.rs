@@ -503,7 +503,18 @@ impl<'ctx> IRGenerator<'ctx> {
 
         self.generate_main_wrapper(program);
 
-        let _ = self.module.verify();
+        if let Err(e) = self.module.verify() {
+            let msg = if e.to_string().is_empty() {
+                "LLVM module verification failed".to_string()
+            } else {
+                format!("{e}")
+            };
+            self.emit_error(
+                crate::diag::TrussDiagnosticCode::IRError,
+                msg.clone(),
+                None,
+            );
+        }
 
         IRModules {
             main: Rc::new(std::mem::replace(
