@@ -11134,11 +11134,22 @@ impl<'ctx> IRGenerator<'ctx> {
                                             inkwell::values::BasicMetadataValueEnum<'ctx>,
                                         > = Vec::new();
                                         args.push(ptr.into());
+                                        let static_param_types = declared_fn.get_type().get_param_types();
                                         for param in parameters {
                                             let arg_val = self
                                                 .resolve_expression(param.expression.clone())?
                                                 .unwrap();
-                                            args.push(arg_val.into());
+                                            let sidx = args.len();
+                                            if sidx < static_param_types.len()
+                                                && static_param_types[sidx] != arg_val.get_type().into()
+                                                && static_param_types[sidx].is_pointer_type()
+                                            {
+                                                let alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
+                                                self.builder.build_store(alloca, arg_val)?;
+                                                args.push(alloca.into());
+                                            } else {
+                                                args.push(arg_val.into());
+                                            }
                                         }
                                         let call_result =
                                             self.builder.build_call(declared_fn, &args, "")?;
@@ -11218,11 +11229,22 @@ impl<'ctx> IRGenerator<'ctx> {
                                         inkwell::values::BasicMetadataValueEnum<'ctx>,
                                     > = Vec::new();
                                     args.push(ptr.into());
+                                    let vtable_param_types = fn_type.get_param_types();
                                     for param in parameters {
                                         let arg_val = self
                                             .resolve_expression(param.expression.clone())?
                                             .unwrap();
-                                        args.push(arg_val.into());
+                                        let vidx = args.len();
+                                        if vidx < vtable_param_types.len()
+                                            && vtable_param_types[vidx] != arg_val.get_type().into()
+                                            && vtable_param_types[vidx].is_pointer_type()
+                                        {
+                                            let alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
+                                            self.builder.build_store(alloca, arg_val)?;
+                                            args.push(alloca.into());
+                                        } else {
+                                            args.push(arg_val.into());
+                                        }
                                     }
                                     let call_result = self
                                         .builder
