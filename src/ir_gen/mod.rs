@@ -10083,6 +10083,29 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
 
+                    let getter_owner = self
+                        .compute_vtable_method_list(&class_name)
+                        .iter()
+                        .find(|(n, _)| n == &getter_entry)
+                        .map(|(_, o)| o.clone())
+                        .unwrap_or_else(|| class_name.clone());
+                    let static_getter_base = format!("{}.{}.getter", getter_owner, field_name);
+                    let static_getter_name = self
+                        .mangled_fn_names
+                        .borrow()
+                        .get(&static_getter_base)
+                        .cloned()
+                        .unwrap_or_else(|| self.mangle_fn_name(&static_getter_base, &[]));
+                    if let Some(declared_fn) = self.module.get_function(&static_getter_name) {
+                        let result =
+                            self.builder.build_call(declared_fn, &[class_ptr.into()], "")?;
+                        let result_val = match result.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(val) => val,
+                            _ => anyhow::bail!("Getter call did not return a value"),
+                        };
+                        return Ok(Some(result_val));
+                    }
+
                     let field_index =
                         self.get_stored_class_field_index(&class_name, &field_name)?;
 
