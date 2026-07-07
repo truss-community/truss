@@ -355,18 +355,17 @@ impl<'ctx> IRGenerator<'ctx> {
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
             if let Err(e) = self.run_all_passes(&all_stmts) {
-                let msg = if e.to_string().is_empty() {
-                    "LLVM operation failed".to_string()
-                } else {
-                    format!("{e}")
-                };
-                self.emit_error(
-                    crate::diag::TrussDiagnosticCode::IRError,
-                    msg.clone(),
-                    None,
-                );
-                eprintln!("IR generation error: {msg}");
-            }
+            let msg = if e.to_string().is_empty() {
+                "LLVM operation failed".to_string()
+            } else {
+                format!("{e}")
+            };
+            self.emit_error(
+                crate::diag::TrussDiagnosticCode::IRError,
+                msg.clone(),
+                None,
+            );
+        }
             self.fix_missing_terminators();
             self.generate_main_wrapper(program);
             return IRModules {
@@ -391,7 +390,6 @@ impl<'ctx> IRGenerator<'ctx> {
                 msg.clone(),
                 None,
             );
-            eprintln!("IR generation error: {msg}");
         }
         self.fix_missing_terminators();
         self.package_name = saved_pkg;
@@ -500,7 +498,6 @@ impl<'ctx> IRGenerator<'ctx> {
                 msg.clone(),
                 None,
             );
-            eprintln!("IR generation error: {msg}");
         }
         self.fix_missing_terminators();
 
