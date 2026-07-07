@@ -355,12 +355,17 @@ impl<'ctx> IRGenerator<'ctx> {
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
             if let Err(e) = self.run_all_passes(&all_stmts) {
+                let msg = if e.to_string().is_empty() {
+                    "LLVM operation failed".to_string()
+                } else {
+                    format!("{e}")
+                };
                 self.emit_error(
                     crate::diag::TrussDiagnosticCode::IRError,
-                    format!("{e}"),
+                    msg.clone(),
                     None,
                 );
-                eprintln!("IR generation error: {e}");
+                eprintln!("IR generation error: {msg}");
             }
             self.generate_main_wrapper(program);
             return IRModules {
@@ -375,12 +380,17 @@ impl<'ctx> IRGenerator<'ctx> {
         let saved_pkg = std::mem::replace(&mut self.package_name, "Truss".to_string());
         let saved_mod = std::mem::replace(&mut *self.module_name.borrow_mut(), String::new());
         if let Err(e) = self.run_all_passes(stdlib_stmts) {
+            let msg = if e.to_string().is_empty() {
+                "LLVM operation failed".to_string()
+            } else {
+                format!("{e}")
+            };
             self.emit_error(
                 crate::diag::TrussDiagnosticCode::IRError,
-                format!("{e}"),
+                msg.clone(),
                 None,
             );
-            eprintln!("IR generation error: {e}");
+            eprintln!("IR generation error: {msg}");
         }
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
@@ -478,12 +488,17 @@ impl<'ctx> IRGenerator<'ctx> {
         *self.program_scope.borrow_mut() = Some(scope);
         let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.iter().cloned().collect();
         if let Err(e) = self.run_all_passes(&all_main) {
+            let msg = if e.to_string().is_empty() {
+                "LLVM operation failed".to_string()
+            } else {
+                format!("{e}")
+            };
             self.emit_error(
                 crate::diag::TrussDiagnosticCode::IRError,
-                format!("{e}"),
+                msg.clone(),
                 None,
             );
-            eprintln!("IR generation error: {e}");
+            eprintln!("IR generation error: {msg}");
         }
 
         self.generate_main_wrapper(program);
