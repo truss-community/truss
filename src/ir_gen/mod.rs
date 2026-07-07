@@ -355,6 +355,11 @@ impl<'ctx> IRGenerator<'ctx> {
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
             if let Err(e) = self.run_all_passes(&all_stmts) {
+                self.emit_error(
+                    crate::diag::TrussDiagnosticCode::IRError,
+                    format!("{e}"),
+                    None,
+                );
                 eprintln!("IR generation error: {e}");
             }
             self.generate_main_wrapper(program);
@@ -370,6 +375,11 @@ impl<'ctx> IRGenerator<'ctx> {
         let saved_pkg = std::mem::replace(&mut self.package_name, "Truss".to_string());
         let saved_mod = std::mem::replace(&mut *self.module_name.borrow_mut(), String::new());
         if let Err(e) = self.run_all_passes(stdlib_stmts) {
+            self.emit_error(
+                crate::diag::TrussDiagnosticCode::IRError,
+                format!("{e}"),
+                None,
+            );
             eprintln!("IR generation error: {e}");
         }
         self.package_name = saved_pkg;
@@ -468,6 +478,11 @@ impl<'ctx> IRGenerator<'ctx> {
         *self.program_scope.borrow_mut() = Some(scope);
         let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.iter().cloned().collect();
         if let Err(e) = self.run_all_passes(&all_main) {
+            self.emit_error(
+                crate::diag::TrussDiagnosticCode::IRError,
+                format!("{e}"),
+                None,
+            );
             eprintln!("IR generation error: {e}");
         }
 
@@ -2371,9 +2386,12 @@ impl<'ctx> IRGenerator<'ctx> {
                     }
                 }
             }
-            let has_init = body.iter().any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
-            let has_deinit =
-                body.iter().any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
+            let has_init = body
+                .iter()
+                .any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
+            let has_deinit = body
+                .iter()
+                .any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
             if !has_deinit {
                 let deinit_name = self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
                 self.register_mangled_name(&format!("{}.deinit", name.value), &deinit_name);
@@ -3036,7 +3054,12 @@ impl<'ctx> IRGenerator<'ctx> {
                 field_types.push(ptr_ty.into());
             }
 
-            let vtable_name = Self::mangle_type_name("VT", &self.package_name, &*self.module_name.borrow(), class_name);
+            let vtable_name = Self::mangle_type_name(
+                "VT",
+                &self.package_name,
+                &*self.module_name.borrow(),
+                class_name,
+            );
             let vtable_type = self.context.opaque_struct_type(&vtable_name);
             vtable_type.set_body(&field_types, false);
             self.vtable_types
@@ -3371,7 +3394,12 @@ impl<'ctx> IRGenerator<'ctx> {
             for _ in &entries {
                 field_types.push(ptr_ty.into());
             }
-            let wt_name = Self::mangle_type_name("PWT", &self.package_name, &*self.module_name.borrow(), protocol_name);
+            let wt_name = Self::mangle_type_name(
+                "PWT",
+                &self.package_name,
+                &*self.module_name.borrow(),
+                protocol_name,
+            );
             let wt_type = self.context.opaque_struct_type(&wt_name);
             wt_type.set_body(&field_types, false);
             self.protocol_witness_table_types
@@ -3409,7 +3437,12 @@ impl<'ctx> IRGenerator<'ctx> {
             }
             let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
             let field_types: Vec<BasicTypeEnum<'ctx>> = vec![ptr_ty.into(), ptr_ty.into()];
-            let container_name = Self::mangle_type_name("EX", &self.package_name, &*self.module_name.borrow(), protocol_name);
+            let container_name = Self::mangle_type_name(
+                "EX",
+                &self.package_name,
+                &*self.module_name.borrow(),
+                protocol_name,
+            );
             let container_type = self.context.opaque_struct_type(&container_name);
             container_type.set_body(&field_types, false);
             self.existential_container_types
@@ -4302,7 +4335,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                                     let concrete_name =
                                                         self.extract_concrete_type_name(init_expr);
                                                     if let Some(ref concrete_name) = concrete_name {
-                                                        for (i, (pkg_pname, bare_pname)) in names.iter().enumerate() {
+                                                        for (i, (pkg_pname, bare_pname)) in
+                                                            names.iter().enumerate()
+                                                        {
                                                             let key = (
                                                                 bare_pname.clone(),
                                                                 concrete_name.clone(),
@@ -4960,55 +4995,87 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.enter_scope();
                     let is_void = matches!(&*return_type.borrow(), Type::Void);
                     let compile_result: Result<bool> = (|| -> Result<bool> {
-                    let is_class_method;
-                    let is_struct_method;
-                    let is_protocol_method;
-                    if let Some(struct_name) = &saved_struct {
-                        is_class_method = self.class_types.borrow().contains_key(struct_name);
-                        is_struct_method = self.struct_types.borrow().contains_key(struct_name);
-                        is_protocol_method = self
-                            .existential_container_types
-                            .borrow()
-                            .contains_key(struct_name);
-                    } else {
-                        is_class_method = false;
-                        is_struct_method = false;
-                        is_protocol_method = false;
-                    }
-                    if is_struct_method || is_class_method || is_protocol_method {
-                        if !static_method {
-                            let self_ptr = function.get_nth_param(0).unwrap();
-                            let self_ptr = self_ptr.into_pointer_value();
-                            self.declare_variable("self".to_string(), self_ptr);
-                            let mut param_offset = 1u32;
-                            if is_throwing {
-                                let err_ptr = function
-                                    .get_nth_param(param_offset)
-                                    .unwrap()
-                                    .into_pointer_value();
-                                *self.error_ptr.borrow_mut() = Some(err_ptr);
-                                param_offset += 1;
-                            }
-                            for (i, param) in parameters.iter().enumerate() {
-                                if param.borrow().variadic_kind == VariadicKind::BareVariadic {
-                                    continue;
+                        let is_class_method;
+                        let is_struct_method;
+                        let is_protocol_method;
+                        if let Some(struct_name) = &saved_struct {
+                            is_class_method = self.class_types.borrow().contains_key(struct_name);
+                            is_struct_method = self.struct_types.borrow().contains_key(struct_name);
+                            is_protocol_method = self
+                                .existential_container_types
+                                .borrow()
+                                .contains_key(struct_name);
+                        } else {
+                            is_class_method = false;
+                            is_struct_method = false;
+                            is_protocol_method = false;
+                        }
+                        if is_struct_method || is_class_method || is_protocol_method {
+                            if !static_method {
+                                let self_ptr = function.get_nth_param(0).unwrap();
+                                let self_ptr = self_ptr.into_pointer_value();
+                                self.declare_variable("self".to_string(), self_ptr);
+                                let mut param_offset = 1u32;
+                                if is_throwing {
+                                    let err_ptr = function
+                                        .get_nth_param(param_offset)
+                                        .unwrap()
+                                        .into_pointer_value();
+                                    *self.error_ptr.borrow_mut() = Some(err_ptr);
+                                    param_offset += 1;
                                 }
-                                let param_name = &param.borrow().name.value;
-                                let param_ty = param.borrow().ty.clone().ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Parameter '{}' has no resolved type",
-                                        param_name
-                                    )
-                                })?;
-                                let llvm_type = self.resolve_type(param_ty)?;
-                                let alloca_name = self.unique_alloca_name(param_name);
-                                let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
-                                if let Some(param_value) =
-                                    function.get_nth_param(i as u32 + param_offset)
-                                {
-                                    self.builder.build_store(ptr, param_value)?;
+                                for (i, param) in parameters.iter().enumerate() {
+                                    if param.borrow().variadic_kind == VariadicKind::BareVariadic {
+                                        continue;
+                                    }
+                                    let param_name = &param.borrow().name.value;
+                                    let param_ty = param.borrow().ty.clone().ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Parameter '{}' has no resolved type",
+                                            param_name
+                                        )
+                                    })?;
+                                    let llvm_type = self.resolve_type(param_ty)?;
+                                    let alloca_name = self.unique_alloca_name(param_name);
+                                    let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
+                                    if let Some(param_value) =
+                                        function.get_nth_param(i as u32 + param_offset)
+                                    {
+                                        self.builder.build_store(ptr, param_value)?;
+                                    }
+                                    self.declare_variable(param_name.clone(), ptr);
                                 }
-                                self.declare_variable(param_name.clone(), ptr);
+                            } else {
+                                let mut param_offset = 0u32;
+                                if is_throwing {
+                                    let err_ptr = function
+                                        .get_nth_param(param_offset)
+                                        .unwrap()
+                                        .into_pointer_value();
+                                    *self.error_ptr.borrow_mut() = Some(err_ptr);
+                                    param_offset += 1;
+                                }
+                                for (i, param) in parameters.iter().enumerate() {
+                                    if param.borrow().variadic_kind == VariadicKind::BareVariadic {
+                                        continue;
+                                    }
+                                    let param_name = &param.borrow().name.value;
+                                    let param_ty = param.borrow().ty.clone().ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Parameter '{}' has no resolved type",
+                                            param_name
+                                        )
+                                    })?;
+                                    let llvm_type = self.resolve_type(param_ty)?;
+                                    let alloca_name = self.unique_alloca_name(param_name);
+                                    let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
+                                    if let Some(param_value) =
+                                        function.get_nth_param(i as u32 + param_offset)
+                                    {
+                                        self.builder.build_store(ptr, param_value)?;
+                                    }
+                                    self.declare_variable(param_name.clone(), ptr);
+                                }
                             }
                         } else {
                             let mut param_offset = 0u32;
@@ -5025,12 +5092,13 @@ impl<'ctx> IRGenerator<'ctx> {
                                     continue;
                                 }
                                 let param_name = &param.borrow().name.value;
-                                let param_ty = param.borrow().ty.clone().ok_or_else(|| {
-                                    anyhow::anyhow!(
+                                let param_ty = param.borrow().ty.clone();
+                                let Some(param_ty) = param_ty else {
+                                    anyhow::bail!(
                                         "Parameter '{}' has no resolved type",
                                         param_name
-                                    )
-                                })?;
+                                    );
+                                };
                                 let llvm_type = self.resolve_type(param_ty)?;
                                 let alloca_name = self.unique_alloca_name(param_name);
                                 let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
@@ -5042,104 +5110,75 @@ impl<'ctx> IRGenerator<'ctx> {
                                 self.declare_variable(param_name.clone(), ptr);
                             }
                         }
-                    } else {
-                        let mut param_offset = 0u32;
-                        if is_throwing {
-                            let err_ptr = function
-                                .get_nth_param(param_offset)
-                                .unwrap()
-                                .into_pointer_value();
-                            *self.error_ptr.borrow_mut() = Some(err_ptr);
-                            param_offset += 1;
-                        }
-                        for (i, param) in parameters.iter().enumerate() {
-                            if param.borrow().variadic_kind == VariadicKind::BareVariadic {
-                                continue;
-                            }
-                            let param_name = &param.borrow().name.value;
-                            let param_ty = param.borrow().ty.clone();
-                            let Some(param_ty) = param_ty else {
-                                anyhow::bail!("Parameter '{}' has no resolved type", param_name);
-                            };
-                            let llvm_type = self.resolve_type(param_ty)?;
-                            let alloca_name = self.unique_alloca_name(param_name);
-                            let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
-                            if let Some(param_value) =
-                                function.get_nth_param(i as u32 + param_offset)
-                            {
-                                self.builder.build_store(ptr, param_value)?;
-                            }
-                            self.declare_variable(param_name.clone(), ptr);
-                        }
-                    }
 
-                    match &*body.borrow() {
-                        FunctionBody::Statements(stmts) => {
-                            self.enter_scope_with_stmts(stmts)?;
-                            let mut has_return = false;
-                            let stmt_count = stmts.len();
-                            for (i, stmt) in stmts.iter().enumerate() {
-                                let is_last = i == stmt_count - 1;
-                                if is_last && !is_void {
-                                    if let Statement::ExpressionStatement { expression } =
-                                        &*stmt.borrow()
-                                    {
-                                        let value = self.resolve_expression(expression.clone())?;
-                                        if let Some(value) = value {
-                                            self.emit_all_deinit_calls();
-                                            self.emit_class_releases();
-                                            self.builder.build_return(Some(&value))?;
-                                            has_return = true;
-                                            break;
+                        match &*body.borrow() {
+                            FunctionBody::Statements(stmts) => {
+                                self.enter_scope_with_stmts(stmts)?;
+                                let mut has_return = false;
+                                let stmt_count = stmts.len();
+                                for (i, stmt) in stmts.iter().enumerate() {
+                                    let is_last = i == stmt_count - 1;
+                                    if is_last && !is_void {
+                                        if let Statement::ExpressionStatement { expression } =
+                                            &*stmt.borrow()
+                                        {
+                                            let value =
+                                                self.resolve_expression(expression.clone())?;
+                                            if let Some(value) = value {
+                                                self.emit_all_deinit_calls();
+                                                self.emit_class_releases();
+                                                self.builder.build_return(Some(&value))?;
+                                                has_return = true;
+                                                break;
+                                            }
                                         }
                                     }
+                                    let terminates = self.resolve_statement(stmt.clone())?;
+                                    if terminates {
+                                        has_return = true;
+                                        break;
+                                    }
                                 }
-                                let terminates = self.resolve_statement(stmt.clone())?;
-                                if terminates {
-                                    has_return = true;
-                                    break;
+                                self.exit_scope();
+                                if is_void && !has_return {
+                                    self.builder.build_return(None)?;
                                 }
                             }
-                            self.exit_scope();
-                            if is_void && !has_return {
-                                self.builder.build_return(None)?;
-                            }
-                        }
-                        FunctionBody::Expression(expr) => {
-                            let value = self.resolve_expression(expr.clone())?.unwrap();
-                            self.emit_all_deinit_calls();
-                            self.emit_class_releases();
-                            self.builder.build_return(Some(&value))?;
-                        }
-                        FunctionBody::None => {
-                            if is_class_method
-                                && name.value == "deallocate"
-                                && attributes.iter().any(|a| a.name == "autowired")
-                            {
-                                let self_ptr =
-                                    function.get_nth_param(0).unwrap().into_pointer_value();
-                                self.builder
-                                    .build_call(
-                                        self.module.get_function("free").unwrap_or_else(|| {
-                                            let ptr_ty = self
-                                                .context
-                                                .ptr_type(inkwell::AddressSpace::default());
-                                            let free_ty = self
-                                                .context
-                                                .void_type()
-                                                .fn_type(&[ptr_ty.into()], false);
-                                            self.module.add_function("free", free_ty, None)
-                                        }),
-                                        &[self_ptr.into()],
-                                        "",
-                                    )
-                                    .unwrap();
-                                self.builder.build_return(None)?;
-                            } else {
+                            FunctionBody::Expression(expr) => {
+                                let value = self.resolve_expression(expr.clone())?.unwrap();
+                                self.emit_all_deinit_calls();
                                 self.emit_class_releases();
+                                self.builder.build_return(Some(&value))?;
+                            }
+                            FunctionBody::None => {
+                                if is_class_method
+                                    && name.value == "deallocate"
+                                    && attributes.iter().any(|a| a.name == "autowired")
+                                {
+                                    let self_ptr =
+                                        function.get_nth_param(0).unwrap().into_pointer_value();
+                                    self.builder
+                                        .build_call(
+                                            self.module.get_function("free").unwrap_or_else(|| {
+                                                let ptr_ty = self
+                                                    .context
+                                                    .ptr_type(inkwell::AddressSpace::default());
+                                                let free_ty = self
+                                                    .context
+                                                    .void_type()
+                                                    .fn_type(&[ptr_ty.into()], false);
+                                                self.module.add_function("free", free_ty, None)
+                                            }),
+                                            &[self_ptr.into()],
+                                            "",
+                                        )
+                                        .unwrap();
+                                    self.builder.build_return(None)?;
+                                } else {
+                                    self.emit_class_releases();
+                                }
                             }
                         }
-                    }
                         Ok(false)
                     })();
                     if let Some(bb) = self.builder.get_insert_block() {
@@ -5326,8 +5365,7 @@ impl<'ctx> IRGenerator<'ctx> {
                     let self_ptr = self_ptr.into_pointer_value();
                     self.declare_variable("self".to_string(), self_ptr);
 
-                    let is_class_deinit =
-                        self.class_types.borrow().contains_key(&struct_name);
+                    let is_class_deinit = self.class_types.borrow().contains_key(&struct_name);
                     match &*body.borrow() {
                         FunctionBody::Statements(stmts) => {
                             self.enter_scope_with_stmts(stmts)?;
@@ -5339,15 +5377,12 @@ impl<'ctx> IRGenerator<'ctx> {
                             }
                             if is_class_deinit {
                                 self.emit_own_property_destruction(&struct_name, self_ptr)?;
-                                if let Some(ref sname) =
-                                    self.get_superclass_name(&struct_name)
-                                {
-                                    let sdeinit = self
-                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                if let Some(ref sname) = self.get_superclass_name(&struct_name) {
+                                    let sdeinit =
+                                        self.mangle_fn_name(&format!("{}.deinit", sname), &[]);
                                     if let Some(sfn) = self.module.get_function(&sdeinit) {
-                                        let _ = self
-                                            .builder
-                                            .build_call(sfn, &[self_ptr.into()], "");
+                                        let _ =
+                                            self.builder.build_call(sfn, &[self_ptr.into()], "");
                                     }
                                 }
                             }
@@ -5358,15 +5393,12 @@ impl<'ctx> IRGenerator<'ctx> {
                             self.resolve_expression(expr.clone())?;
                             if is_class_deinit {
                                 self.emit_own_property_destruction(&struct_name, self_ptr)?;
-                                if let Some(ref sname) =
-                                    self.get_superclass_name(&struct_name)
-                                {
-                                    let sdeinit = self
-                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                if let Some(ref sname) = self.get_superclass_name(&struct_name) {
+                                    let sdeinit =
+                                        self.mangle_fn_name(&format!("{}.deinit", sname), &[]);
                                     if let Some(sfn) = self.module.get_function(&sdeinit) {
-                                        let _ = self
-                                            .builder
-                                            .build_call(sfn, &[self_ptr.into()], "");
+                                        let _ =
+                                            self.builder.build_call(sfn, &[self_ptr.into()], "");
                                     }
                                 }
                             }
@@ -5375,15 +5407,12 @@ impl<'ctx> IRGenerator<'ctx> {
                         FunctionBody::None => {
                             if is_class_deinit {
                                 self.emit_own_property_destruction(&struct_name, self_ptr)?;
-                                if let Some(ref sname) =
-                                    self.get_superclass_name(&struct_name)
-                                {
-                                    let sdeinit = self
-                                        .mangle_fn_name(&format!("{}.deinit", sname), &[]);
+                                if let Some(ref sname) = self.get_superclass_name(&struct_name) {
+                                    let sdeinit =
+                                        self.mangle_fn_name(&format!("{}.deinit", sname), &[]);
                                     if let Some(sfn) = self.module.get_function(&sdeinit) {
-                                        let _ = self
-                                            .builder
-                                            .build_call(sfn, &[self_ptr.into()], "");
+                                        let _ =
+                                            self.builder.build_call(sfn, &[self_ptr.into()], "");
                                     }
                                 }
                             }
@@ -5529,10 +5558,12 @@ impl<'ctx> IRGenerator<'ctx> {
                     for stmt in body {
                         self.resolve_statement(stmt.clone())?;
                     }
-                    let has_init =
-                        body.iter().any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
-                    let has_deinit =
-                        body.iter().any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
+                    let has_init = body
+                        .iter()
+                        .any(|s| matches!(&*s.borrow(), Statement::InitDecl { .. }));
+                    let has_deinit = body
+                        .iter()
+                        .any(|s| matches!(&*s.borrow(), Statement::DeinitDecl { .. }));
                     let superclass_name = superclass.as_ref().and_then(|se| {
                         if let Expression::Type { name: sn, .. } = &*se.borrow() {
                             Some(sn.value.clone())
@@ -5541,25 +5572,24 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     });
                     if !has_deinit {
-                        let fn_name =
-                            self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
+                        let fn_name = self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
                         if let Some(func) = self.module.get_function(&fn_name) {
                             if func.count_basic_blocks() == 0 {
                                 let current_block = self.builder.get_insert_block();
                                 let entry = self.context.append_basic_block(func, "entry");
                                 self.builder.position_at_end(entry);
-                                let self_ptr =
-                                    func.get_nth_param(0).unwrap().into_pointer_value();
+                                let self_ptr = func.get_nth_param(0).unwrap().into_pointer_value();
                                 self.emit_own_property_destruction(&name.value, self_ptr)?;
                                 if let Some(ref super_name) = superclass_name {
-                                    let super_deinit = self
-                                        .mangle_fn_name(&format!("{}.deinit", super_name), &[]);
-                                    if let Some(super_fn) =
-                                        self.module.get_function(&super_deinit)
+                                    let super_deinit =
+                                        self.mangle_fn_name(&format!("{}.deinit", super_name), &[]);
+                                    if let Some(super_fn) = self.module.get_function(&super_deinit)
                                     {
-                                        let _ = self
-                                            .builder
-                                            .build_call(super_fn, &[self_ptr.into()], "");
+                                        let _ = self.builder.build_call(
+                                            super_fn,
+                                            &[self_ptr.into()],
+                                            "",
+                                        );
                                     }
                                 }
                                 self.builder.build_return(None)?;
@@ -5570,30 +5600,26 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                     if !has_init {
-                        let fn_name =
-                            self.mangle_fn_name(&format!("{}.init", name.value), &[]);
+                        let fn_name = self.mangle_fn_name(&format!("{}.init", name.value), &[]);
                         if let Some(func) = self.module.get_function(&fn_name) {
                             if func.count_basic_blocks() == 0 {
                                 let current_block = self.builder.get_insert_block();
                                 let entry = self.context.append_basic_block(func, "entry");
                                 self.builder.position_at_end(entry);
-                                let self_ptr =
-                                    func.get_nth_param(0).unwrap().into_pointer_value();
+                                let self_ptr = func.get_nth_param(0).unwrap().into_pointer_value();
                                 if let Some(ref super_name) = superclass_name {
                                     let super_init_base = format!("{}.init", super_name);
                                     let super_init = {
                                         let names = self.mangled_fn_names.borrow();
                                         names.get(&super_init_base).cloned()
                                     }
-                                    .unwrap_or_else(|| {
-                                        self.mangle_fn_name(&super_init_base, &[])
-                                    });
-                                    if let Some(super_fn) =
-                                        self.module.get_function(&super_init)
-                                    {
-                                        let _ = self
-                                            .builder
-                                            .build_call(super_fn, &[self_ptr.into()], "");
+                                    .unwrap_or_else(|| self.mangle_fn_name(&super_init_base, &[]));
+                                    if let Some(super_fn) = self.module.get_function(&super_init) {
+                                        let _ = self.builder.build_call(
+                                            super_fn,
+                                            &[self_ptr.into()],
+                                            "",
+                                        );
                                     }
                                 }
                                 self.emit_own_property_initialization(&name.value, self_ptr)?;
@@ -5745,9 +5771,8 @@ impl<'ctx> IRGenerator<'ctx> {
                         let tag_val = self.builder.build_load(raw_llvm_type, raw_ptr, "")?;
                         let tag_value =
                             self.get_enum_case_tag_value(&enum_name, &case_name.value)?;
-                        let expected_tag = raw_llvm_type
-                            .into_int_type()
-                            .const_int(tag_value, false);
+                        let expected_tag =
+                            raw_llvm_type.into_int_type().const_int(tag_value, false);
                         let match_result = self.builder.build_int_compare(
                             inkwell::IntPredicate::EQ,
                             tag_val.into_int_value(),
@@ -6607,75 +6632,58 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     })
                 } {
-                    let getter_name = self.mangle_fn_name(
-                        &format!("{}.{}.getter", sname, name.value),
-                        &[],
-                    );
+                    let getter_name =
+                        self.mangle_fn_name(&format!("{}.{}.getter", sname, name.value), &[]);
                     if let Some(getter_fn) = self.module.get_function(&getter_name) {
                         let result =
-                            self.builder.build_call(getter_fn, &[struct_ptr.into()], "")?;
+                            self.builder
+                                .build_call(getter_fn, &[struct_ptr.into()], "")?;
                         match result.try_as_basic_value() {
                             inkwell::values::ValueKind::Basic(val) => Ok(Some(val)),
                             _ => Ok(None),
                         }
-                    } else if let Ok(idx) =
-                        self.get_stored_class_field_index(&sname, &name.value)
-                    {
+                    } else if let Ok(idx) = self.get_stored_class_field_index(&sname, &name.value) {
                         let ctype = *self.class_types.borrow().get(sname.as_str()).unwrap();
-                        let field_ptr = self.builder.build_struct_gep(
-                            ctype,
-                            struct_ptr,
-                            idx as u32,
-                            "",
-                        )?;
+                        let field_ptr = self
+                            .builder
+                            .build_struct_gep(ctype, struct_ptr, idx as u32, "")?;
                         let llvm_type = if let Some(ty) = ty {
                             self.resolve_type(ty.clone())?
                         } else {
-                            anyhow::bail!(
-                                "Cannot infer type for class field '{}'",
-                                name.value
-                            )
+                            anyhow::bail!("Cannot infer type for class field '{}'", name.value)
                         };
                         Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
                     } else {
-                        anyhow::bail!(
-                            "Undefined member '{}' in class '{}'",
-                            name.value,
-                            sname
-                        )
+                        anyhow::bail!("Undefined member '{}' in class '{}'", name.value, sname)
                     }
                 } else if let Some(sname) = self.current_struct.borrow().clone()
                     && let Some(self_ptr) = self.lookup_variable("self")
                     && let Some(ctype) = self.class_types.borrow().get(&sname).copied()
                     && let Ok(idx) = self.get_stored_class_field_index(&sname, &name.value)
-                    && let Ok(field_ptr) =
-                        self.builder.build_struct_gep(ctype, self_ptr, idx as u32, "")
+                    && let Ok(field_ptr) = self
+                        .builder
+                        .build_struct_gep(ctype, self_ptr, idx as u32, "")
                 {
                     self.declare_variable(name.value.clone(), field_ptr);
                     let llvm_type = if let Some(ty) = ty {
                         self.resolve_type(ty.clone())?
                     } else {
-                        anyhow::bail!(
-                            "Cannot infer type for class field '{}'",
-                            name.value
-                        )
+                        anyhow::bail!("Cannot infer type for class field '{}'", name.value)
                     };
                     Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
                 } else if let Some(sname) = self.current_struct.borrow().clone()
                     && let Some(self_ptr) = self.lookup_variable("self")
                     && let Some(stype) = self.struct_types.borrow().get(&sname).copied()
                     && let Ok(idx) = self.get_stored_struct_field_index(&sname, &name.value)
-                    && let Ok(field_ptr) =
-                        self.builder.build_struct_gep(stype, self_ptr, idx as u32, "")
+                    && let Ok(field_ptr) = self
+                        .builder
+                        .build_struct_gep(stype, self_ptr, idx as u32, "")
                 {
                     self.declare_variable(name.value.clone(), field_ptr);
                     let llvm_type = if let Some(ty) = ty {
                         self.resolve_type(ty.clone())?
                     } else {
-                        anyhow::bail!(
-                            "Cannot infer type for struct field '{}'",
-                            name.value
-                        )
+                        anyhow::bail!("Cannot infer type for struct field '{}'", name.value)
                     };
                     Ok(Some(self.builder.build_load(llvm_type, field_ptr, "")?))
                 } else if let Some(fn_val) = self.module.get_function(&name.value).or_else(|| {
@@ -7814,8 +7822,9 @@ impl<'ctx> IRGenerator<'ctx> {
                         && let Some(self_ptr) = self.lookup_variable("self")
                         && let Some(ctype) = self.class_types.borrow().get(&sname).copied()
                         && let Ok(idx) = self.get_stored_class_field_index(&sname, &name)
-                        && let Ok(field_ptr) =
-                            self.builder.build_struct_gep(ctype, self_ptr, idx as u32, "")
+                        && let Ok(field_ptr) = self
+                            .builder
+                            .build_struct_gep(ctype, self_ptr, idx as u32, "")
                     {
                         self.declare_variable(name.clone(), field_ptr);
                         let ty = if let Some(ty_rc) = ty_opt.clone() {
@@ -7829,8 +7838,9 @@ impl<'ctx> IRGenerator<'ctx> {
                         && let Some(self_ptr) = self.lookup_variable("self")
                         && let Some(stype) = self.struct_types.borrow().get(&sname).copied()
                         && let Ok(idx) = self.get_stored_struct_field_index(&sname, &name)
-                        && let Ok(field_ptr) =
-                            self.builder.build_struct_gep(stype, self_ptr, idx as u32, "")
+                        && let Ok(field_ptr) = self
+                            .builder
+                            .build_struct_gep(stype, self_ptr, idx as u32, "")
                     {
                         self.declare_variable(name.clone(), field_ptr);
                         let ty = if let Some(ty_rc) = ty_opt.clone() {
@@ -8205,11 +8215,11 @@ impl<'ctx> IRGenerator<'ctx> {
                                             }
                                         })
                                         .ok_or_else(|| {
-                                        anyhow::anyhow!(
-                                            "Setter function {} not found",
-                                            declared_fn_name
-                                        )
-                                    })?;
+                                            anyhow::anyhow!(
+                                                "Setter function {} not found",
+                                                declared_fn_name
+                                            )
+                                        })?;
                                     let fn_type = declared_fn.get_type();
 
                                     self.builder.build_indirect_call(
@@ -9764,7 +9774,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                                     &format!("{}.{}.getter", fb_owner, field_name),
                                                     &[],
                                                 );
-                                                *self.module_name.borrow_mut() = fb_saved_mod.clone();
+                                                *self.module_name.borrow_mut() =
+                                                    fb_saved_mod.clone();
                                                 self.module.get_function(&alt_name)
                                             } else {
                                                 None
@@ -9895,15 +9906,16 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .into_pointer_value();
 
                             let method_list = self.compute_vtable_method_list(&class_name);
-                            if let Some((_, owner)) = method_list
-                                .iter()
-                                .find(|(n, _)| n == &getter_entry)
+                            if let Some((_, owner)) =
+                                method_list.iter().find(|(n, _)| n == &getter_entry)
                             {
-                                let declared_fn_name = self
-                                    .mangle_fn_name(&format!("{}.{}.getter", owner, field_name), &[]);
+                                let declared_fn_name = self.mangle_fn_name(
+                                    &format!("{}.{}.getter", owner, field_name),
+                                    &[],
+                                );
                                 let saved_mod = self.module_name.borrow().clone();
-                                let declared_fn = self.module.get_function(&declared_fn_name)
-                                    .or_else(|| {
+                                let declared_fn =
+                                    self.module.get_function(&declared_fn_name).or_else(|| {
                                         if !saved_mod.is_empty() {
                                             *self.module_name.borrow_mut() = String::new();
                                             let alt_name = self.mangle_fn_name(
@@ -10177,9 +10189,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
                     if let Some(raw_llvm_type) = self.get_enum_raw_llvm_type(&enum_name) {
                         let tag_value = self.get_enum_case_tag_value(&enum_name, &case_name)?;
-                        let raw_val = raw_llvm_type
-                            .into_int_type()
-                            .const_int(tag_value, false);
+                        let raw_val = raw_llvm_type.into_int_type().const_int(tag_value, false);
                         let alloca = self
                             .builder
                             .build_alloca(enum_llvm_type.as_basic_type_enum(), "")?;
@@ -11145,7 +11155,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                                 )?
                                                 .into_pointer_value();
 
-                                            for (slot, (_pkg_pname, bare_pname)) in names.iter().enumerate() {
+                                            for (slot, (_pkg_pname, bare_pname)) in
+                                                names.iter().enumerate()
+                                            {
                                                 if let Some(wt) = self
                                                     .protocol_witness_table_types
                                                     .borrow()
@@ -11919,8 +11931,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .get_field_type_at_index(1)
                                 .map_or(false, |f| f.is_pointer_type())
                         {
-                            let protocol_name =
-                                struct_name.rsplit('$').next().unwrap_or("");
+                            let protocol_name = struct_name.rsplit('$').next().unwrap_or("");
                             let val_alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
                             self.builder.build_store(val_alloca, arg_val)?;
                             let container = self.builder.build_alloca(struct_ty, "")?;
@@ -11932,7 +11943,9 @@ impl<'ctx> IRGenerator<'ctx> {
                             let is_compound = struct_ty.get_field_type_at_index(2).is_some();
 
                             if is_compound {
-                                let bare_protocol_names: Vec<String> = if struct_name.starts_with("_T$CEX$") {
+                                let bare_protocol_names: Vec<String> = if struct_name
+                                    .starts_with("_T$CEX$")
+                                {
                                     let body = struct_name.trim_start_matches("_T$CEX$");
                                     body.split("$C$")
                                         .map(|entry| {
@@ -13060,9 +13073,11 @@ impl<'ctx> IRGenerator<'ctx> {
                             self.builder
                                 .build_struct_gep(enum_llvm_type, alloca, 0, "")?;
                         self.builder.build_store(raw_ptr, raw_val)?;
-                        let val =
-                            self.builder
-                                .build_load(enum_llvm_type.as_basic_type_enum(), alloca, "")?;
+                        let val = self.builder.build_load(
+                            enum_llvm_type.as_basic_type_enum(),
+                            alloca,
+                            "",
+                        )?;
                         return Ok(Some(val));
                     }
 
@@ -13601,7 +13616,9 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.context.ptr_type(inkwell::AddressSpace::from(0)).into();
                 if !self.class_types.borrow().contains_key(name) {
                     let class_type = self.context.opaque_struct_type(name);
-                    self.class_types.borrow_mut().insert(name.clone(), class_type);
+                    self.class_types
+                        .borrow_mut()
+                        .insert(name.clone(), class_type);
                 }
                 ptr_type
             }
