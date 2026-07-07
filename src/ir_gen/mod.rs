@@ -11122,8 +11122,13 @@ impl<'ctx> IRGenerator<'ctx> {
                                         .find(|(n, _)| n == method_name)
                                         .map(|(_, owner)| owner.clone())
                                         .unwrap_or_else(|| class_name.clone());
+                                    let base_name_static = format!("{}.{}", owner, method_name);
                                     let fn_name = self
-                                        .mangle_fn_name(&format!("{}.{}", owner, method_name), &[]);
+                                        .mangled_fn_names
+                                        .borrow()
+                                        .get(&base_name_static)
+                                        .cloned()
+                                        .unwrap_or_else(|| self.mangle_fn_name(&base_name_static, &[]));
                                     if let Some(declared_fn) = self.module.get_function(&fn_name) {
                                         let mut args: Vec<
                                             inkwell::values::BasicMetadataValueEnum<'ctx>,
