@@ -10948,7 +10948,6 @@ impl<'ctx> IRGenerator<'ctx> {
                     }
                     Expression::MemberAccess { object, member, .. } => {
                         let is_mod = self.is_module_expression(object);
-                        eprintln!("DEBUG MemberAccess callee: member={}, is_module_expression={}", member.value, is_mod);
                         if is_mod {
                             let fn_name = member.value.clone();
                             if self.module.get_function(&fn_name).is_some()
@@ -10990,7 +10989,7 @@ impl<'ctx> IRGenerator<'ctx> {
                             let object_expr = object.borrow();
                             let object_ty = object_expr.get_ty_ref()?.clone();
                             drop(object_expr);
-                            eprintln!("DEBUG non-module MemberAccess: member={}, object_ty={:?}", member.value, object_ty.as_ref().map(|t| format!("{:?}", t.borrow())));
+
 
                             if let Some(ty) = &object_ty
                                 && let Type::Enum(enum_name, ..) = &*ty.borrow()
