@@ -2195,6 +2195,47 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                 }
+                if let Statement::VariableDecl {
+                    name: field_name,
+                    accessors,
+                    ty: Some(ty),
+                    token,
+                    ..
+                } = &*stmt.borrow()
+                {
+                    let has_explicit_get = accessors
+                        .iter()
+                        .any(|a| matches!(a.kind, AccessorKind::Get));
+                    let has_explicit_set = accessors
+                        .iter()
+                        .any(|a| matches!(a.kind, AccessorKind::Set));
+                    if let Ok(llvm_ty) = self.resolve_type(ty.clone()) {
+                        if has_explicit_get || has_explicit_set {
+                            self.declare_accessor_functions(
+                                &name.value,
+                                &field_name.value,
+                                accessors,
+                                llvm_ty,
+                            );
+                        } else {
+                            let is_var = matches!(
+                                &token.ty,
+                                TokenType::Keyword {
+                                    keyword: KeywordType::Var
+                                }
+                            );
+                            self.declare_accessor_fn(&name.value, &field_name.value, true, llvm_ty);
+                            if is_var {
+                                self.declare_accessor_fn(
+                                    &name.value,
+                                    &field_name.value,
+                                    false,
+                                    llvm_ty,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             let deinit_name = self.mangle_fn_name(&format!("{}.deinit", name.value), &[]);
             self.mangled_fn_names
@@ -3778,15 +3819,16 @@ impl<'ctx> IRGenerator<'ctx> {
         let fn_prefix = format!("{}.{}", struct_name, field_name);
 
         for accessor in accessors {
-            let fn_name = match accessor.kind {
+        let fn_name = match accessor.kind {
                 AccessorKind::Get => self.mangle_fn_name(&format!("{}.getter", fn_prefix), &[]),
                 AccessorKind::Set => self.mangle_fn_name(&format!("{}.setter", fn_prefix), &[]),
                 AccessorKind::WillSet => {
                     self.mangle_fn_name(&format!("{}.willSet", fn_prefix), &[])
                 }
-                AccessorKind::DidSet => self.mangle_fn_name(&format!("{}.didSet", fn_prefix), &[]),
+                AccessorKind::DidSet => {
+                    self.mangle_fn_name(&format!("{}.didSet", fn_prefix), &[])
+                }
             };
-
             if self.module.get_function(&fn_name).is_some() {
                 continue;
             }
@@ -9708,8 +9750,13 @@ impl<'ctx> IRGenerator<'ctx> {
                         ptr
                     };
 
-                    let getter_name =
-                        self.mangle_fn_name(&format!("{}.{}.getter", struct_name, field_name), &[]);
+                    let getter_base = format!("{}.{}.getter", struct_name, field_name);
+                    let getter_name = self
+                        .mangled_fn_names
+                        .borrow()
+                        .get(&getter_base)
+                        .cloned()
+                        .unwrap_or_else(|| self.mangle_fn_name(&getter_base, &[]));
                     if let Some(getter_fn) = self.module.get_function(&getter_name) {
                         let result =
                             self.builder
@@ -10900,7 +10947,9 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                     Expression::MemberAccess { object, member, .. } => {
-                        if self.is_module_expression(object) {
+                        let is_mod = self.is_module_expression(object);
+                        eprintln!("DEBUG MemberAccess callee: member={}, is_module_expression={}", member.value, is_mod);
+                        if is_mod {
                             let fn_name = member.value.clone();
                             if self.module.get_function(&fn_name).is_some()
                                 || self.mangled_fn_names.borrow().contains_key(&fn_name)
@@ -10921,12 +10970,27 @@ impl<'ctx> IRGenerator<'ctx> {
                             {
                                 (mangled, false)
                             } else {
-                                (fn_name, false)
+                                let init_name = format!("{}.init", fn_name);
+                                let mangled = self
+                                    .mangled_fn_names
+                                    .borrow()
+                                    .get(&init_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
+                                if self.module.get_function(&mangled).is_some()
+                                    || self.class_types.borrow().contains_key(&fn_name)
+                                    || self.struct_types.borrow().contains_key(&fn_name)
+                                {
+                                    (mangled, true)
+                                } else {
+                                    (fn_name, false)
+                                }
                             }
                         } else {
                             let object_expr = object.borrow();
                             let object_ty = object_expr.get_ty_ref()?.clone();
                             drop(object_expr);
+                            eprintln!("DEBUG non-module MemberAccess: member={}, object_ty={:?}", member.value, object_ty.as_ref().map(|t| format!("{:?}", t.borrow())));
 
                             if let Some(ty) = &object_ty
                                 && let Type::Enum(enum_name, ..) = &*ty.borrow()
@@ -12040,6 +12104,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
                 let callee_struct_name = match &*callee.borrow() {
                     Expression::Variable { name, .. } => Some(name.value.clone()),
+                    Expression::MemberAccess { member, .. } => Some(member.value.clone()),
                     _ => None,
                 };
                 let instantiation_ptr: Option<(BasicTypeEnum<'ctx>, PointerValue<'ctx>)> =
