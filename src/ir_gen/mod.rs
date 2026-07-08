@@ -8568,6 +8568,39 @@ impl<'ctx> IRGenerator<'ctx> {
                             return Ok(Some(right_val));
                         }
                     }
+                    if let Some(ty) = &sub_ty
+                        && let Type::Pointer(inner) | Type::NonNullPointer(inner) =
+                            &*ty.borrow()
+                    {
+                        let inner = inner.clone();
+                        let object_val =
+                            self.resolve_expression(sub_object.clone())?.unwrap();
+                        let ptr = if let BasicValueEnum::PointerValue(p) = object_val {
+                            p
+                        } else {
+                            let alloca = self
+                                .builder
+                                .build_alloca(object_val.get_type(), "")?;
+                            self.builder.build_store(alloca, object_val)?;
+                            alloca
+                        };
+                        let element_type = self.resolve_type(inner)?;
+                        for p in sub_params {
+                            let idx_val =
+                                self.resolve_expression(p.expression.clone())?.unwrap();
+                            let idx_int = if let BasicValueEnum::IntValue(i) = idx_val {
+                                i
+                            } else {
+                                anyhow::bail!("Pointer subscript index must be integer");
+                            };
+                            let addr = unsafe {
+                                self.builder
+                                    .build_gep(element_type, ptr, &[idx_int], "")?
+                            };
+                            self.builder.build_store(addr, right_val)?;
+                        }
+                        return Ok(Some(right_val));
+                    }
                     anyhow::bail!("Subscript assignment requires struct or class type")
                 } else {
                     self.emit_error(
