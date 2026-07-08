@@ -349,6 +349,7 @@ impl Expression {
             Self::Closure { ty, .. } => Ok(ty),
             Self::ClosureType { ty, .. } => Ok(ty),
             Self::FunctionType { ty, .. } => Ok(ty),
+            Self::PointerType { ty, .. } => Ok(ty),
             Self::ShorthandArgument { ty, .. } => Ok(ty),
             Self::AssociatedTypeAccess { ty, .. } => Ok(ty),
             Self::ImplicitMemberAccess { ty, .. } => Ok(ty),
@@ -364,7 +365,11 @@ impl Expression {
             Self::StringLiteral { ty, .. } => Ok(ty),
             Self::Try { ty, .. } => Ok(ty),
             Self::Call { ty, .. } => Ok(ty),
-            _ => Err(anyhow!("")),
+            Self::MemberAccess { ty, .. } => Ok(ty),
+            _ => Err(anyhow!(
+                "The expression has no ty field. Found expression: {:?}",
+                self
+            )),
         }
     }
     pub fn get_ty_mut_ref(&mut self) -> Result<&mut Option<Rc<RefCell<Type>>>> {
@@ -385,6 +390,7 @@ impl Expression {
             Self::Closure { ty, .. } => Ok(ty),
             Self::ClosureType { ty, .. } => Ok(ty),
             Self::FunctionType { ty, .. } => Ok(ty),
+            Self::PointerType { ty, .. } => Ok(ty),
             Self::ShorthandArgument { ty, .. } => Ok(ty),
             Self::AssociatedTypeAccess { ty, .. } => Ok(ty),
             Self::ImplicitMemberAccess { ty, .. } => Ok(ty),
@@ -400,7 +406,11 @@ impl Expression {
             Self::StringLiteral { ty, .. } => Ok(ty),
             Self::Try { ty, .. } => Ok(ty),
             Self::Call { ty, .. } => Ok(ty),
-            _ => Err(anyhow!("")),
+            Self::MemberAccess { ty, .. } => Ok(ty),
+            _ => Err(anyhow!(
+                "The expression has no ty field. Found expression: {:?}",
+                self
+            )),
         }
     }
     pub fn token(&self) -> Token {

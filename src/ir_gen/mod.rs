@@ -355,17 +355,13 @@ impl<'ctx> IRGenerator<'ctx> {
             let all_stmts: Vec<Rc<RefCell<Statement>>> =
                 program.statements.iter().cloned().collect();
             if let Err(e) = self.run_all_passes(&all_stmts) {
-            let msg = if e.to_string().is_empty() {
-                "LLVM operation failed".to_string()
-            } else {
-                format!("{e}")
-            };
-            self.emit_error(
-                crate::diag::TrussDiagnosticCode::IRError,
-                msg.clone(),
-                None,
-            );
-        }
+                let msg = if e.to_string().is_empty() {
+                    "LLVM operation failed".to_string()
+                } else {
+                    format!("{e}")
+                };
+                self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
+            }
             self.fix_missing_terminators();
             self.generate_main_wrapper(program);
             return IRModules {
@@ -385,11 +381,7 @@ impl<'ctx> IRGenerator<'ctx> {
             } else {
                 format!("{e}")
             };
-            self.emit_error(
-                crate::diag::TrussDiagnosticCode::IRError,
-                msg.clone(),
-                None,
-            );
+            self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
         }
         self.fix_missing_terminators();
         self.package_name = saved_pkg;
@@ -493,11 +485,7 @@ impl<'ctx> IRGenerator<'ctx> {
             } else {
                 format!("{e}")
             };
-            self.emit_error(
-                crate::diag::TrussDiagnosticCode::IRError,
-                msg.clone(),
-                None,
-            );
+            self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
         }
         self.fix_missing_terminators();
 
@@ -509,11 +497,7 @@ impl<'ctx> IRGenerator<'ctx> {
             } else {
                 format!("{e}")
             };
-            self.emit_error(
-                crate::diag::TrussDiagnosticCode::IRError,
-                msg.clone(),
-                None,
-            );
+            self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
         }
 
         IRModules {
@@ -5230,7 +5214,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                         BasicTypeEnum::StructType(t) => t.const_zero().into(),
                                         BasicTypeEnum::ArrayType(t) => t.const_zero().into(),
                                         BasicTypeEnum::VectorType(t) => t.const_zero().into(),
-                                        BasicTypeEnum::ScalableVectorType(t) => t.const_zero().into(),
+                                        BasicTypeEnum::ScalableVectorType(t) => {
+                                            t.const_zero().into()
+                                        }
                                     };
                                     let _ = self.builder.build_return(Some(&zero));
                                 } else {
@@ -6862,19 +6848,14 @@ impl<'ctx> IRGenerator<'ctx> {
                     let sym = &overloads[idx];
                     let op_name = operator.operator_name().to_string();
 
-                    let is_protocol_method = matches!(
-                        &*sym.borrow(),
-                        Symbol::ProtocolMethod { .. }
-                    );
+                    let is_protocol_method =
+                        matches!(&*sym.borrow(), Symbol::ProtocolMethod { .. });
 
                     if is_protocol_method {
                         let protocol_name = {
                             let sym_borrow = sym.borrow();
                             if let Symbol::ProtocolMethod { parent, .. } = &*sym_borrow {
-                                parent
-                                    .0
-                                    .upgrade()
-                                    .and_then(|p| p.borrow().name().ok())
+                                parent.0.upgrade().and_then(|p| p.borrow().name().ok())
                             } else {
                                 None
                             }
@@ -6904,31 +6885,42 @@ impl<'ctx> IRGenerator<'ctx> {
                             if let Some(fn_name) = fn_name {
                                 if let Some(f) = self.module.get_function(&fn_name) {
                                     let left_val = self.resolve_expression(left.clone())?.unwrap();
-                                    let right_val = self.resolve_expression(right.clone())?.unwrap();
+                                    let right_val =
+                                        self.resolve_expression(right.clone())?.unwrap();
 
-                                    let left_ptr = if let BasicValueEnum::PointerValue(p) = left_val {
+                                    let left_ptr = if let BasicValueEnum::PointerValue(p) = left_val
+                                    {
                                         p
                                     } else {
-                                        let alloca = self.builder.build_alloca(left_val.get_type(), "")?;
+                                        let alloca =
+                                            self.builder.build_alloca(left_val.get_type(), "")?;
                                         self.builder.build_store(alloca, left_val)?;
                                         alloca
                                     };
-                                    let right_ptr = if let BasicValueEnum::PointerValue(p) = right_val {
+                                    let right_ptr = if let BasicValueEnum::PointerValue(p) =
+                                        right_val
+                                    {
                                         p
                                     } else {
-                                        let alloca = self.builder.build_alloca(right_val.get_type(), "")?;
+                                        let alloca =
+                                            self.builder.build_alloca(right_val.get_type(), "")?;
                                         self.builder.build_store(alloca, right_val)?;
                                         alloca
                                     };
 
                                     let param_types = f.get_type().get_param_types();
-                                    let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+                                    let mut args: Vec<
+                                        inkwell::values::BasicMetadataValueEnum<'ctx>,
+                                    > = Vec::new();
                                     args.push(left_ptr.into());
 
                                     if param_types.len() > 2 {
-                                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
-                                        let err_alloca = self.builder.build_alloca(ptr_ty, "call_err")?;
-                                        self.builder.build_store(err_alloca, ptr_ty.const_null())?;
+                                        let ptr_ty =
+                                            self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                        let err_alloca =
+                                            self.builder.build_alloca(ptr_ty, "call_err")?;
+                                        self.builder
+                                            .build_store(err_alloca, ptr_ty.const_null())?;
                                         args.push(err_alloca.into());
                                     }
 
@@ -6940,10 +6932,15 @@ impl<'ctx> IRGenerator<'ctx> {
                                         } else if rhs_expected_type.is_struct_type() {
                                             let st = rhs_expected_type.into_struct_type();
                                             let alloca = self.builder.build_alloca(st, "")?;
-                                            let field0 = self.builder.build_struct_gep(st, alloca, 0, "")?;
+                                            let field0 =
+                                                self.builder.build_struct_gep(st, alloca, 0, "")?;
                                             self.builder.build_store(field0, right_ptr)?;
-                                            let field1 = self.builder.build_struct_gep(st, alloca, 1, "")?;
-                                            let null_ptr = self.context.ptr_type(inkwell::AddressSpace::from(0)).const_null();
+                                            let field1 =
+                                                self.builder.build_struct_gep(st, alloca, 1, "")?;
+                                            let null_ptr = self
+                                                .context
+                                                .ptr_type(inkwell::AddressSpace::from(0))
+                                                .const_null();
                                             self.builder.build_store(field1, null_ptr)?;
                                             let loaded = self.builder.build_load(st, alloca, "")?;
                                             loaded.into()
@@ -6957,7 +6954,9 @@ impl<'ctx> IRGenerator<'ctx> {
 
                                     let call_result = self.builder.build_call(f, &args, "")?;
                                     match call_result.try_as_basic_value() {
-                                        inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                                        inkwell::values::ValueKind::Basic(val) => {
+                                            return Ok(Some(val));
+                                        }
                                         _ => return Ok(None),
                                     }
                                 }
@@ -10109,7 +10108,8 @@ impl<'ctx> IRGenerator<'ctx> {
                         .unwrap_or_else(|| self.mangle_fn_name(&static_getter_base, &[]));
                     if let Some(declared_fn) = self.module.get_function(&static_getter_name) {
                         let result =
-                            self.builder.build_call(declared_fn, &[class_ptr.into()], "")?;
+                            self.builder
+                                .build_call(declared_fn, &[class_ptr.into()], "")?;
                         let result_val = match result.try_as_basic_value() {
                             inkwell::values::ValueKind::Basic(val) => val,
                             _ => anyhow::bail!("Getter call did not return a value"),
@@ -11159,23 +11159,29 @@ impl<'ctx> IRGenerator<'ctx> {
                                         .borrow()
                                         .get(&base_name_static)
                                         .cloned()
-                                        .unwrap_or_else(|| self.mangle_fn_name(&base_name_static, &[]));
+                                        .unwrap_or_else(|| {
+                                            self.mangle_fn_name(&base_name_static, &[])
+                                        });
                                     if let Some(declared_fn) = self.module.get_function(&fn_name) {
                                         let mut args: Vec<
                                             inkwell::values::BasicMetadataValueEnum<'ctx>,
                                         > = Vec::new();
                                         args.push(ptr.into());
-                                        let static_param_types = declared_fn.get_type().get_param_types();
+                                        let static_param_types =
+                                            declared_fn.get_type().get_param_types();
                                         for param in parameters {
                                             let arg_val = self
                                                 .resolve_expression(param.expression.clone())?
                                                 .unwrap();
                                             let sidx = args.len();
                                             if sidx < static_param_types.len()
-                                                && static_param_types[sidx] != arg_val.get_type().into()
+                                                && static_param_types[sidx]
+                                                    != arg_val.get_type().into()
                                                 && static_param_types[sidx].is_pointer_type()
                                             {
-                                                let alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
+                                                let alloca = self
+                                                    .builder
+                                                    .build_alloca(arg_val.get_type(), "")?;
                                                 self.builder.build_store(alloca, arg_val)?;
                                                 args.push(alloca.into());
                                             } else {
@@ -11244,7 +11250,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                         .borrow()
                                         .get(&base_name_vtable)
                                         .cloned()
-                                        .unwrap_or_else(|| self.mangle_fn_name(&base_name_vtable, &[]));
+                                        .unwrap_or_else(|| {
+                                            self.mangle_fn_name(&base_name_vtable, &[])
+                                        });
                                     let declared_fn =
                                         self.module.get_function(&fn_name).ok_or_else(|| {
                                             self.emit_error(
@@ -11270,7 +11278,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                             && vtable_param_types[vidx] != arg_val.get_type().into()
                                             && vtable_param_types[vidx].is_pointer_type()
                                         {
-                                            let alloca = self.builder.build_alloca(arg_val.get_type(), "")?;
+                                            let alloca = self
+                                                .builder
+                                                .build_alloca(arg_val.get_type(), "")?;
                                             self.builder.build_store(alloca, arg_val)?;
                                             args.push(alloca.into());
                                         } else {
