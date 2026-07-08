@@ -8838,7 +8838,15 @@ impl<'ctx> IRGenerator<'ctx> {
                     let subject_alloca = self.builder.build_alloca(subject_val.get_type(), "")?;
                     self.builder.build_store(subject_alloca, subject_val)?;
 
-                    let enum_name = &enum_type.as_ref().unwrap().value;
+                    let enum_name_token = enum_type.as_ref().ok_or_else(|| {
+                        self.emit_error(
+                            crate::diag::TrussDiagnosticCode::IRError,
+                            "if-let pattern without enum type annotation",
+                            None,
+                        );
+                        anyhow::anyhow!("if-let pattern without enum type annotation")
+                    })?;
+                    let enum_name = &enum_name_token.value;
                     let case_idx = self.get_enum_case_index(enum_name, &case_name.value)?;
 
                     let enum_types = self.enum_types.borrow();
