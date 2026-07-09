@@ -10157,6 +10157,59 @@ impl<'ctx> IRGenerator<'ctx> {
                         return Ok(Some(result_val));
                     }
 
+                    let cross_module_getter_ty: Option<Rc<RefCell<Type>>> = 'search: {
+                        let scope_guard = self.program_scope.borrow();
+                        let Some(scope) = scope_guard.as_ref() else {
+                            break 'search None;
+                        };
+                        let Some(symbol) = scope.borrow().get_symbol_deep(&struct_name) else {
+                            break 'search None;
+                        };
+                        let sym_ref = symbol.borrow();
+                        let Symbol::Struct { properties, .. } = &*sym_ref else {
+                            break 'search None;
+                        };
+                        let mut found_ty = None;
+                        for prop in properties.iter() {
+                            if prop.borrow().name().as_ref().ok()
+                                != Some(&field_name.to_string())
+                            {
+                                continue;
+                            }
+                            if let Some(decl) = prop.borrow().get_decl().ok().flatten()
+                                && let Statement::VariableDecl {
+                                    ty: Some(ty),
+                                    accessors,
+                                    ..
+                                } = &*decl.borrow()
+                            {
+                                let has_get_set = accessors.iter().any(|a| {
+                                    matches!(a.kind, AccessorKind::Get | AccessorKind::Set)
+                                });
+                                if has_get_set {
+                                    found_ty = Some(ty.clone());
+                                }
+                            }
+                            break;
+                        }
+                        found_ty
+                    };
+                    if let Some(prop_ty) = cross_module_getter_ty
+                        && let Ok(llvm_ty) = self.resolve_type(prop_ty)
+                    {
+                        self.declare_accessor_fn(&struct_name, &field_name, true, llvm_ty);
+                        if let Some(getter_fn) = self.module.get_function(&getter_name) {
+                            let result =
+                                self.builder
+                                    .build_call(getter_fn, &[struct_ptr.into()], "")?;
+                            let result_val = match result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => val,
+                                _ => anyhow::bail!("Getter call did not return a value"),
+                            };
+                            return Ok(Some(result_val));
+                        }
+                    }
+
                     let field_index =
                         self.get_stored_struct_field_index(&struct_name, &field_name)?;
 
