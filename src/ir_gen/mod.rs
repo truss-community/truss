@@ -169,12 +169,12 @@ impl<'ctx> IRGenerator<'ctx> {
                 ..
             } = &*stmt.borrow()
             {
-                let llvm_type = if let Some(ty) = ty {
-                    self.resolve_type(ty.clone())?
+                let inferred_type = if let Some(ty) = ty {
+                    Some(self.resolve_type(ty.clone())?)
                 } else if let Some(type_expr) = type_expression {
-                    self.infer_type_from_expression(type_expr.clone())?
+                    self.infer_type_from_expression(type_expr.clone()).ok()
                 } else if let Some(init) = initializer {
-                    self.infer_type_from_expression(init.clone())?
+                    self.infer_type_from_expression(init.clone()).ok()
                 } else {
                     self.emit_error(
                         TrussDiagnosticCode::TypeInferenceFailed,
@@ -182,6 +182,10 @@ impl<'ctx> IRGenerator<'ctx> {
                         Some(name),
                     );
                     anyhow::bail!("Cannot determine variable type");
+                };
+                let llvm_type = match inferred_type {
+                    Some(t) => t,
+                    None => continue,
                 };
 
                 let alloca_name = self.unique_alloca_name(&name.value);
@@ -14716,11 +14720,6 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let Some(ty) = ty {
                     self.resolve_type(ty.clone())
                 } else {
-                    self.emit_error(
-                        TrussDiagnosticCode::TypeInferenceFailed,
-                        "Cannot infer type from this expression",
-                        None,
-                    );
                     anyhow::bail!("Cannot infer type")
                 }
             }
