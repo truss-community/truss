@@ -5229,6 +5229,7 @@ impl<'ctx> IRGenerator<'ctx> {
                             is_protocol_method = false;
                         }
                         if is_struct_method || is_class_method || is_protocol_method {
+                            *self.current_struct.borrow_mut() = saved_struct.clone();
                             if !static_method {
                                 let self_ptr = function.get_nth_param(0).unwrap();
                                 let self_ptr = self_ptr.into_pointer_value();
@@ -6819,12 +6820,32 @@ impl<'ctx> IRGenerator<'ctx> {
                             _ => Ok(None),
                         }
                     } else {
-                        self.emit_error(
-                            TrussDiagnosticCode::UndefinedVariable,
-                            format!("Undefined variable: '{}'", name.value),
-                            Some(name),
-                        );
-                        anyhow::bail!("Undefined variable: {}", name.value);
+                        let class_self_ptr = {
+                            let sn_opt = self.current_struct.borrow().clone();
+                            sn_opt.and_then(|sn| {
+                                if self.class_types.borrow().contains_key(sn.as_str()) {
+                                    self.lookup_variable("self")
+                                } else {
+                                    None
+                                }
+                            })
+                        };
+                        if let Some(self_ptr) = class_self_ptr {
+                            let result =
+                                self.builder
+                                    .build_call(getter_fn, &[self_ptr.into()], "")?;
+                            match result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => Ok(Some(val)),
+                                _ => Ok(None),
+                            }
+                        } else {
+                            self.emit_error(
+                                TrussDiagnosticCode::UndefinedVariable,
+                                format!("Undefined variable: '{}'", name.value),
+                                Some(name),
+                            );
+                            anyhow::bail!("Undefined variable: {}", name.value);
+                        }
                     }
                 } else if let Some(ptr) = self.lookup_variable(&name.value) {
                     let llvm_type = if let Some(ty) = ty {
@@ -11165,58 +11186,56 @@ impl<'ctx> IRGenerator<'ctx> {
                         return Ok(Some(val));
                     }
                 }
-                if selected_index.is_none() || overloads.is_empty() {
-                    if let Some(callee_ty) =
+                if (selected_index.is_none() || overloads.is_empty())
+                    && let Some(callee_ty) =
                         callee.borrow().get_ty_ref().ok().and_then(|t| t.clone())
+                {
+                    let type_name = match &*callee_ty.borrow() {
+                        Type::Struct(n, ..) | Type::Class(n, ..) | Type::Enum(n, ..) => {
+                            Some(n.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(ref type_name) = type_name
+                        && self.has_dynamic_callable(type_name)
                     {
-                        let type_name = match &*callee_ty.borrow() {
-                            Type::Struct(n, ..) | Type::Class(n, ..) | Type::Enum(n, ..) => {
-                                Some(n.clone())
-                            }
-                            _ => None,
+                        let object_val = self.resolve_expression(callee.clone())?.unwrap();
+                        let self_ptr = if let BasicValueEnum::PointerValue(p) = object_val {
+                            p
+                        } else {
+                            let p = self.builder.build_alloca(object_val.get_type(), "")?;
+                            self.builder.build_store(p, object_val)?;
+                            p
                         };
-                        if let Some(ref type_name) = type_name {
-                            if self.has_dynamic_callable(type_name) {
-                                let object_val = self.resolve_expression(callee.clone())?.unwrap();
-                                let self_ptr = if let BasicValueEnum::PointerValue(p) = object_val {
-                                    p
-                                } else {
-                                    let p = self.builder.build_alloca(object_val.get_type(), "")?;
-                                    self.builder.build_store(p, object_val)?;
-                                    p
-                                };
-                                for param in parameters {
-                                    self.resolve_expression(param.expression.clone())?;
+                        for param in parameters {
+                            self.resolve_expression(param.expression.clone())?;
+                        }
+                        let key = format!("{}.dynamicallyCall", type_name);
+                        let mangled = self
+                            .mangled_fn_names
+                            .borrow()
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| self.mangle_fn_name(&key, &[]));
+                        if let Some(f) = self.module.get_function(&mangled) {
+                            let fn_type = f.get_type();
+                            let param_count = fn_type.get_param_types().len();
+                            let null_ptr = self
+                                .context
+                                .ptr_type(inkwell::AddressSpace::from(0))
+                                .const_null();
+                            let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                                Vec::new();
+                            args.push(self_ptr.into());
+                            for _ in 1..param_count {
+                                args.push(null_ptr.into());
+                            }
+                            let call_result = self.builder.build_call(f, &args, "")?;
+                            match call_result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => {
+                                    return Ok(Some(val));
                                 }
-                                let key = format!("{}.dynamicallyCall", type_name);
-                                let mangled = self
-                                    .mangled_fn_names
-                                    .borrow()
-                                    .get(&key)
-                                    .cloned()
-                                    .unwrap_or_else(|| self.mangle_fn_name(&key, &[]));
-                                if let Some(f) = self.module.get_function(&mangled) {
-                                    let fn_type = f.get_type();
-                                    let param_count = fn_type.get_param_types().len();
-                                    let null_ptr = self
-                                        .context
-                                        .ptr_type(inkwell::AddressSpace::from(0))
-                                        .const_null();
-                                    let mut args: Vec<
-                                        inkwell::values::BasicMetadataValueEnum<'ctx>,
-                                    > = Vec::new();
-                                    args.push(self_ptr.into());
-                                    for _ in 1..param_count {
-                                        args.push(null_ptr.into());
-                                    }
-                                    let call_result = self.builder.build_call(f, &args, "")?;
-                                    match call_result.try_as_basic_value() {
-                                        inkwell::values::ValueKind::Basic(val) => {
-                                            return Ok(Some(val));
-                                        }
-                                        _ => return Ok(None),
-                                    }
-                                }
+                                _ => return Ok(None),
                             }
                         }
                     }
