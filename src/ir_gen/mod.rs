@@ -5810,7 +5810,15 @@ impl<'ctx> IRGenerator<'ctx> {
                     {
                         name
                     } else {
-                        String::new()
+                        let subject_ty = expression.borrow().get_ty().ok().flatten();
+                        if let Some(ty) = &subject_ty
+                            && let Type::Enum(name, _, _) = &*ty.borrow()
+                            && name == "Optional"
+                        {
+                            "Optional".to_string()
+                        } else {
+                            String::new()
+                        }
                     };
                     let check_bb = self.context.append_basic_block(fn_val, "guard_check");
                     let else_bb = self.context.append_basic_block(fn_val, "guard_else");
@@ -5872,7 +5880,9 @@ impl<'ctx> IRGenerator<'ctx> {
 
                     self.builder.position_at_end(else_bb);
                     self.resolve_block_expression(else_body)?;
-                    self.builder.build_unconditional_branch(exit_bb)?;
+                    if else_bb.get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(exit_bb)?;
+                    }
 
                     self.builder.position_at_end(exit_bb);
 
@@ -8838,14 +8848,30 @@ impl<'ctx> IRGenerator<'ctx> {
                     let subject_alloca = self.builder.build_alloca(subject_val.get_type(), "")?;
                     self.builder.build_store(subject_alloca, subject_val)?;
 
-                    let enum_name_token = enum_type.as_ref().ok_or_else(|| {
-                        self.emit_error(
-                            crate::diag::TrussDiagnosticCode::IRError,
-                            "if-let pattern without enum type annotation",
-                            None,
-                        );
-                        anyhow::anyhow!("if-let pattern without enum type annotation")
-                    })?;
+                    let enum_name_token: Box<Token> = match enum_type.as_ref() {
+                        Some(t) => t.clone(),
+                        None => {
+                            let subject_ty = expression.borrow().get_ty().ok().flatten();
+                            if let Some(ty) = &subject_ty
+                                && let Type::Enum(name, _, _) = &*ty.borrow()
+                                && name == "Optional"
+                            {
+                                Box::new(Token::new(
+                                    "Optional".to_string(),
+                                    TokenType::Identifier,
+                                    case_name.position.clone(),
+                                    case_name.file.clone(),
+                                ))
+                            } else {
+                                self.emit_error(
+                                    crate::diag::TrussDiagnosticCode::IRError,
+                                    "if-let pattern without enum type annotation",
+                                    None,
+                                );
+                                anyhow::bail!("if-let pattern without enum type annotation")
+                            }
+                        }
+                    };
                     let enum_name = &enum_name_token.value;
                     let case_idx = self.get_enum_case_index(enum_name, &case_name.value)?;
 
