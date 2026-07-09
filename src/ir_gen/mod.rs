@@ -352,8 +352,7 @@ impl<'ctx> IRGenerator<'ctx> {
     ) -> IRModules<'ctx> {
         if stdlib_stmts.is_empty() {
             *self.program_scope.borrow_mut() = Some(scope);
-            let all_stmts: Vec<Rc<RefCell<Statement>>> =
-                program.statements.iter().cloned().collect();
+            let all_stmts: Vec<Rc<RefCell<Statement>>> = program.statements.to_vec();
             if let Err(e) = self.run_all_passes(&all_stmts) {
                 let msg = if e.to_string().is_empty() {
                     "LLVM operation failed".to_string()
@@ -417,16 +416,16 @@ impl<'ctx> IRGenerator<'ctx> {
                 .unwrap_or((self.package_name.clone(), self.module_name.borrow().clone()));
             let vtable_global_name =
                 Self::mangle_global_name(&pkg, &mod_name, "__vtable", class_name);
-            if self.module.get_global(&vtable_global_name).is_none() {
-                if let Some(t) = self.vtable_types.borrow().get(class_name).copied() {
-                    let gv =
-                        self.module
-                            .add_global(t.as_basic_type_enum(), None, &vtable_global_name);
-                    gv.set_linkage(inkwell::module::Linkage::External);
-                    self.vtable_globals
-                        .borrow_mut()
-                        .insert(class_name.clone(), gv);
-                }
+            if self.module.get_global(&vtable_global_name).is_none()
+                && let Some(t) = self.vtable_types.borrow().get(class_name).copied()
+            {
+                let gv = self
+                    .module
+                    .add_global(t.as_basic_type_enum(), None, &vtable_global_name);
+                gv.set_linkage(inkwell::module::Linkage::External);
+                self.vtable_globals
+                    .borrow_mut()
+                    .insert(class_name.clone(), gv);
             }
         }
 
@@ -478,7 +477,7 @@ impl<'ctx> IRGenerator<'ctx> {
         }
 
         *self.program_scope.borrow_mut() = Some(scope);
-        let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.iter().cloned().collect();
+        let all_main: Vec<Rc<RefCell<Statement>>> = program.statements.to_vec();
         if let Err(e) = self.run_all_passes(&all_main) {
             let msg = if e.to_string().is_empty() {
                 "LLVM operation failed".to_string()
@@ -603,7 +602,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 let mangled = Self::mangle_type_name(
                     "S",
                     &self.package_name,
-                    &*self.module_name.borrow(),
+                    &self.module_name.borrow(),
                     struct_name,
                 );
                 let struct_type = self.context.opaque_struct_type(&mangled);
@@ -712,7 +711,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 let mangled = Self::mangle_type_name(
                     "C",
                     &self.package_name,
-                    &*self.module_name.borrow(),
+                    &self.module_name.borrow(),
                     class_name,
                 );
                 let class_type = self.context.opaque_struct_type(&mangled);
@@ -797,31 +796,26 @@ impl<'ctx> IRGenerator<'ctx> {
             superclass: Some(super_expr),
             ..
         } = &*decl.borrow()
-        {
-            if let Expression::Type {
+            && let Expression::Type {
                 name: super_name, ..
             } = &*super_expr.borrow()
-            {
-                field_types.extend(self.collect_class_stored_field_types(&super_name.value));
-            }
+        {
+            field_types.extend(self.collect_class_stored_field_types(&super_name.value));
         }
 
         for field in properties.iter() {
-            if let Ok(Some(field_decl)) = field.borrow().get_decl() {
-                if let Statement::VariableDecl {
+            if let Ok(Some(field_decl)) = field.borrow().get_decl()
+                && let Statement::VariableDecl {
                     accessors,
                     ty: Some(ty),
                     ..
                 } = &*field_decl.borrow()
-                {
-                    let has_get_set = accessors
-                        .iter()
-                        .any(|a| matches!(a.kind, AccessorKind::Get | AccessorKind::Set));
-                    if !has_get_set {
-                        if let Ok(llvm_ty) = self.resolve_type(ty.clone()) {
-                            field_types.push(llvm_ty);
-                        }
-                    }
+            {
+                let has_get_set = accessors
+                    .iter()
+                    .any(|a| matches!(a.kind, AccessorKind::Get | AccessorKind::Set));
+                if !has_get_set && let Ok(llvm_ty) = self.resolve_type(ty.clone()) {
+                    field_types.push(llvm_ty);
                 }
             }
         }
@@ -921,23 +915,17 @@ impl<'ctx> IRGenerator<'ctx> {
                     if is_class {
                         if let Some(class_type) =
                             self.class_types.borrow().get(struct_name).copied()
-                        {
-                            if let Ok(field_ptr) = self.builder.build_struct_gep(
+                            && let Ok(field_ptr) = self.builder.build_struct_gep(
                                 class_type,
                                 self_ptr,
                                 gep_idx as u32,
                                 "",
-                            ) {
-                                if let Some(param_ptr) = self.lookup_variable(&param_name) {
-                                    if let Ok(llvm_ty) = self.resolve_type(field_ty.clone()) {
-                                        if let Ok(param_val) =
-                                            self.builder.build_load(llvm_ty, param_ptr, "")
-                                        {
-                                            let _ = self.builder.build_store(field_ptr, param_val);
-                                        }
-                                    }
-                                }
-                            }
+                            )
+                            && let Some(param_ptr) = self.lookup_variable(&param_name)
+                            && let Ok(llvm_ty) = self.resolve_type(field_ty.clone())
+                            && let Ok(param_val) = self.builder.build_load(llvm_ty, param_ptr, "")
+                        {
+                            let _ = self.builder.build_store(field_ptr, param_val);
                         }
                     } else if let Some(struct_type) =
                         self.struct_types.borrow().get(struct_name).copied()
@@ -945,16 +933,11 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let Ok(field_ptr) =
                             self.builder
                                 .build_struct_gep(struct_type, self_ptr, gep_idx as u32, "")
+                            && let Some(param_ptr) = self.lookup_variable(&param_name)
+                            && let Ok(llvm_ty) = self.resolve_type(field_ty.clone())
+                            && let Ok(param_val) = self.builder.build_load(llvm_ty, param_ptr, "")
                         {
-                            if let Some(param_ptr) = self.lookup_variable(&param_name) {
-                                if let Ok(llvm_ty) = self.resolve_type(field_ty.clone()) {
-                                    if let Ok(param_val) =
-                                        self.builder.build_load(llvm_ty, param_ptr, "")
-                                    {
-                                        let _ = self.builder.build_store(field_ptr, param_val);
-                                    }
-                                }
-                            }
+                            let _ = self.builder.build_store(field_ptr, param_val);
                         }
                     }
                     break;
@@ -1174,6 +1157,37 @@ impl<'ctx> IRGenerator<'ctx> {
             );
         }
         false
+    }
+
+    fn to_i64_for_compare(
+        &self,
+        val: BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>> {
+        match val {
+            BasicValueEnum::IntValue(i) => {
+                let i64_ty = self.context.i64_type();
+                if i.get_type().get_bit_width() == 64 {
+                    Ok(i)
+                } else {
+                    Ok(self.builder.build_int_s_extend(i, i64_ty, "")?)
+                }
+            }
+            BasicValueEnum::PointerValue(p) => {
+                Ok(self
+                    .builder
+                    .build_ptr_to_int(p, self.context.i64_type(), "")?)
+            }
+            BasicValueEnum::StructValue(s) => {
+                let ptr = self
+                    .builder
+                    .build_extract_value(s, 0, "")?
+                    .into_pointer_value();
+                Ok(self
+                    .builder
+                    .build_ptr_to_int(ptr, self.context.i64_type(), "")?)
+            }
+            _ => anyhow::bail!("Cannot convert value to i64 for comparison"),
+        }
     }
 
     fn get_stored_struct_field_index(&self, struct_name: &str, field_name: &str) -> Result<usize> {
@@ -1542,16 +1556,13 @@ impl<'ctx> IRGenerator<'ctx> {
     }
 
     fn get_enum_raw_llvm_type(&self, enum_name: &str) -> Option<BasicTypeEnum<'ctx>> {
-        if let Some(scope) = self.program_scope.borrow().as_ref() {
-            if let Some(symbol) = scope.borrow().get_symbol_deep(enum_name) {
-                if let Symbol::Enum { decl, .. } = &*symbol.borrow() {
-                    if let Statement::EnumDecl { raw_value_type, .. } = &*decl.borrow() {
-                        if let Some(raw_type) = raw_value_type {
-                            return self.resolve_type(raw_type.clone()).ok();
-                        }
-                    }
-                }
-            }
+        if let Some(scope) = self.program_scope.borrow().as_ref()
+            && let Some(symbol) = scope.borrow().get_symbol_deep(enum_name)
+            && let Symbol::Enum { decl, .. } = &*symbol.borrow()
+            && let Statement::EnumDecl { raw_value_type, .. } = &*decl.borrow()
+            && let Some(raw_type) = raw_value_type
+        {
+            return self.resolve_type(raw_type.clone()).ok();
         }
         None
     }
@@ -3418,16 +3429,15 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let Statement::FunctionDecl { parameters, ty, .. } = &*decl_ref {
                     let fn_ty = ty.as_ref()?;
                     let fn_borrow = fn_ty.borrow();
-                    if let Type::Function(param_tys, _, _, None) = &*fn_borrow {
-                        if param_tys.len() == proto_param_tys.len()
-                            && param_tys
-                                .iter()
-                                .zip(proto_param_tys.iter())
-                                .all(|(a, b)| Self::types_compatible(&a.borrow(), &b.borrow()))
-                        {
-                            let base = format!("{}.{}", type_name, actual_entry_name);
-                            return Some(self.mangle_fn_name(&base, &parameters));
-                        }
+                    if let Type::Function(param_tys, _, _, None) = &*fn_borrow
+                        && param_tys.len() == proto_param_tys.len()
+                        && param_tys
+                            .iter()
+                            .zip(proto_param_tys.iter())
+                            .all(|(a, b)| Self::types_compatible(&a.borrow(), &b.borrow()))
+                    {
+                        let base = format!("{}.{}", type_name, actual_entry_name);
+                        return Some(self.mangle_fn_name(&base, &parameters));
                     }
                 }
             }
@@ -3819,15 +3829,13 @@ impl<'ctx> IRGenerator<'ctx> {
         let fn_prefix = format!("{}.{}", struct_name, field_name);
 
         for accessor in accessors {
-        let fn_name = match accessor.kind {
+            let fn_name = match accessor.kind {
                 AccessorKind::Get => self.mangle_fn_name(&format!("{}.getter", fn_prefix), &[]),
                 AccessorKind::Set => self.mangle_fn_name(&format!("{}.setter", fn_prefix), &[]),
                 AccessorKind::WillSet => {
                     self.mangle_fn_name(&format!("{}.willSet", fn_prefix), &[])
                 }
-                AccessorKind::DidSet => {
-                    self.mangle_fn_name(&format!("{}.didSet", fn_prefix), &[])
-                }
+                AccessorKind::DidSet => self.mangle_fn_name(&format!("{}.didSet", fn_prefix), &[]),
             };
             if self.module.get_function(&fn_name).is_some() {
                 continue;
@@ -4763,16 +4771,165 @@ impl<'ctx> IRGenerator<'ctx> {
                 self.builder.build_unconditional_branch(while_bb)?;
                 self.builder.position_at_end(while_bb);
 
-                let cond_val = self.resolve_expression(condition.clone())?.unwrap();
-                let cond_int = cond_val.into_int_value();
-                self.builder
-                    .build_conditional_branch(cond_int, body_bb, exit_bb)?;
+                if let Expression::Case {
+                    enum_type,
+                    case_name,
+                    bindings,
+                    expression,
+                    ..
+                } = &*condition.borrow()
+                {
+                    let subject_val = self.resolve_expression(expression.clone())?.unwrap();
+                    let subject_alloca = self.builder.build_alloca(subject_val.get_type(), "")?;
+                    self.builder.build_store(subject_alloca, subject_val)?;
+                    let enum_name = if let Some(t) = enum_type.as_ref() {
+                        t.value.clone()
+                    } else if let Some(name) =
+                        self.get_enum_name_from_expr_string(expression.clone())
+                    {
+                        name
+                    } else {
+                        let subject_ty = expression.borrow().get_ty().ok().flatten();
+                        if let Some(ty) = &subject_ty
+                            && let Type::Enum(name, _, _) = &*ty.borrow()
+                        {
+                            name.clone()
+                        } else {
+                            anyhow::bail!("while-case: cannot infer enum type")
+                        }
+                    };
+                    let case_idx = self.get_enum_case_index(&enum_name, &case_name.value)?;
+                    let enum_types = self.enum_types.borrow();
+                    let enum_llvm_type = enum_types
+                        .get(&enum_name)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("Enum type '{}' not found", enum_name))?;
+                    drop(enum_types);
+                    let match_result = if let Some(raw_ty) = self.get_enum_raw_llvm_type(&enum_name)
+                    {
+                        let tag_ptr =
+                            self.builder
+                                .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
+                        let tag_val = self.builder.build_load(raw_ty, tag_ptr, "")?;
+                        let tag_value =
+                            self.get_enum_case_tag_value(&enum_name, &case_name.value)?;
+                        let expected_tag = raw_ty.into_int_type().const_int(tag_value, false);
+                        self.builder.build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag_val.into_int_value(),
+                            expected_tag,
+                            "",
+                        )?
+                    } else {
+                        let tag_ptr =
+                            self.builder
+                                .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
+                        let tag_val =
+                            self.builder
+                                .build_load(self.context.i8_type(), tag_ptr, "")?;
+                        let expected_tag = self.context.i8_type().const_int(case_idx as u64, false);
+                        self.builder.build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            tag_val.into_int_value(),
+                            expected_tag,
+                            "",
+                        )?
+                    };
+                    self.builder
+                        .build_conditional_branch(match_result, body_bb, exit_bb)?;
+                    self.builder.position_at_end(body_bb);
+                    self.enter_scope();
+                    if !bindings.is_empty() {
+                        let enum_payloads = self.enum_payload_types.borrow();
+                        if let Some(payload_type) = enum_payloads.get(&enum_name) {
+                            let payload_union_ptr = self.builder.build_struct_gep(
+                                enum_llvm_type,
+                                subject_alloca,
+                                1,
+                                "",
+                            )?;
+                            let case_payload_ptr = self.builder.build_struct_gep(
+                                *payload_type,
+                                payload_union_ptr,
+                                case_idx as u32,
+                                "",
+                            )?;
+                            let case_payload_ty = payload_type
+                                .get_field_type_at_index(case_idx as u32)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("Case payload not found at {}", case_idx)
+                                })?
+                                .into_struct_type();
+                            for (i, binding) in bindings.iter().enumerate() {
+                                let token = match binding {
+                                    Pattern::Identifier(t) => Some(t.as_ref()),
+                                    Pattern::ValueBinding(inner) => {
+                                        if let Pattern::Identifier(t) = inner.as_ref() {
+                                            Some(t.as_ref())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(token) = token {
+                                    let field_ptr = self.builder.build_struct_gep(
+                                        case_payload_ty,
+                                        case_payload_ptr,
+                                        i as u32,
+                                        "",
+                                    )?;
+                                    let field_ty = case_payload_ty
+                                        .get_field_type_at_index(i as u32)
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("Binding field not found at {}", i)
+                                        })?;
+                                    if field_ty.is_pointer_type() {
+                                        let val_ptr = self.builder.build_load(
+                                            self.context.ptr_type(inkwell::AddressSpace::from(0)),
+                                            field_ptr,
+                                            "",
+                                        )?;
+                                        let loaded = self.builder.build_load(
+                                            enum_llvm_type.as_basic_type_enum(),
+                                            val_ptr.into_pointer_value(),
+                                            "",
+                                        )?;
+                                        let var_ptr = self.builder.build_alloca(
+                                            enum_llvm_type.as_basic_type_enum(),
+                                            &token.value,
+                                        )?;
+                                        self.builder.build_store(var_ptr, loaded)?;
+                                        self.declare_variable(token.value.clone(), var_ptr);
+                                    } else {
+                                        let field_val =
+                                            self.builder.build_load(field_ty, field_ptr, "")?;
+                                        let var_ptr =
+                                            self.builder.build_alloca(field_ty, &token.value)?;
+                                        self.builder.build_store(var_ptr, field_val)?;
+                                        self.declare_variable(token.value.clone(), var_ptr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let terminates = self.resolve_block_expression(body)?;
+                    self.exit_scope();
+                    if !terminates {
+                        self.builder.build_unconditional_branch(while_bb)?;
+                    }
+                } else {
+                    let cond_val = self.resolve_expression(condition.clone())?.unwrap();
+                    let cond_int = cond_val.into_int_value();
+                    self.builder
+                        .build_conditional_branch(cond_int, body_bb, exit_bb)?;
 
-                self.builder.position_at_end(body_bb);
-                let terminates = self.resolve_block_expression(body)?;
+                    self.builder.position_at_end(body_bb);
+                    let terminates = self.resolve_block_expression(body)?;
 
-                if !terminates {
-                    self.builder.build_unconditional_branch(while_bb)?;
+                    if !terminates {
+                        self.builder.build_unconditional_branch(while_bb)?;
+                    }
                 }
 
                 self.loop_break_targets.borrow_mut().pop();
@@ -6934,83 +7091,77 @@ impl<'ctx> IRGenerator<'ctx> {
                                     self.mangle_from_overload(&base, sym, &params)
                                 });
 
-                            if let Some(fn_name) = fn_name {
-                                if let Some(f) = self.module.get_function(&fn_name) {
-                                    let left_val = self.resolve_expression(left.clone())?.unwrap();
-                                    let right_val =
-                                        self.resolve_expression(right.clone())?.unwrap();
+                            if let Some(fn_name) = fn_name
+                                && let Some(f) = self.module.get_function(&fn_name)
+                            {
+                                let left_val = self.resolve_expression(left.clone())?.unwrap();
+                                let right_val = self.resolve_expression(right.clone())?.unwrap();
 
-                                    let left_ptr = if let BasicValueEnum::PointerValue(p) = left_val
-                                    {
-                                        p
-                                    } else {
-                                        let alloca =
-                                            self.builder.build_alloca(left_val.get_type(), "")?;
-                                        self.builder.build_store(alloca, left_val)?;
-                                        alloca
-                                    };
-                                    let right_ptr = if let BasicValueEnum::PointerValue(p) =
-                                        right_val
-                                    {
-                                        p
-                                    } else {
-                                        let alloca =
-                                            self.builder.build_alloca(right_val.get_type(), "")?;
-                                        self.builder.build_store(alloca, right_val)?;
-                                        alloca
-                                    };
+                                let left_ptr = if let BasicValueEnum::PointerValue(p) = left_val {
+                                    p
+                                } else {
+                                    let alloca =
+                                        self.builder.build_alloca(left_val.get_type(), "")?;
+                                    self.builder.build_store(alloca, left_val)?;
+                                    alloca
+                                };
+                                let right_ptr = if let BasicValueEnum::PointerValue(p) = right_val {
+                                    p
+                                } else {
+                                    let alloca =
+                                        self.builder.build_alloca(right_val.get_type(), "")?;
+                                    self.builder.build_store(alloca, right_val)?;
+                                    alloca
+                                };
 
-                                    let param_types = f.get_type().get_param_types();
-                                    let mut args: Vec<
-                                        inkwell::values::BasicMetadataValueEnum<'ctx>,
-                                    > = Vec::new();
-                                    args.push(left_ptr.into());
+                                let param_types = f.get_type().get_param_types();
+                                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                                    Vec::new();
+                                args.push(left_ptr.into());
 
-                                    if param_types.len() > 2 {
-                                        let ptr_ty =
-                                            self.context.ptr_type(inkwell::AddressSpace::from(0));
-                                        let err_alloca =
-                                            self.builder.build_alloca(ptr_ty, "call_err")?;
-                                        self.builder
-                                            .build_store(err_alloca, ptr_ty.const_null())?;
-                                        args.push(err_alloca.into());
-                                    }
+                                if param_types.len() > 2 {
+                                    let ptr_ty =
+                                        self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                    let err_alloca =
+                                        self.builder.build_alloca(ptr_ty, "call_err")?;
+                                    self.builder.build_store(err_alloca, ptr_ty.const_null())?;
+                                    args.push(err_alloca.into());
+                                }
 
-                                    let rhs_arg = if param_types.len() >= 2 {
-                                        let rhs_idx = if param_types.len() >= 3 { 2 } else { 1 };
-                                        let rhs_expected_type = param_types[rhs_idx];
-                                        if rhs_expected_type.is_pointer_type() {
-                                            right_ptr.into()
-                                        } else if rhs_expected_type.is_struct_type() {
-                                            let st = rhs_expected_type.into_struct_type();
-                                            let alloca = self.builder.build_alloca(st, "")?;
-                                            let field0 =
-                                                self.builder.build_struct_gep(st, alloca, 0, "")?;
-                                            self.builder.build_store(field0, right_ptr)?;
-                                            let field1 =
-                                                self.builder.build_struct_gep(st, alloca, 1, "")?;
-                                            let null_ptr = self
-                                                .context
-                                                .ptr_type(inkwell::AddressSpace::from(0))
-                                                .const_null();
-                                            self.builder.build_store(field1, null_ptr)?;
-                                            let loaded = self.builder.build_load(st, alloca, "")?;
-                                            loaded.into()
-                                        } else {
-                                            right_ptr.into()
-                                        }
+                                let rhs_arg = if param_types.len() >= 2 {
+                                    let rhs_idx = if param_types.len() >= 3 { 2 } else { 1 };
+                                    let rhs_expected_type = param_types[rhs_idx];
+                                    if rhs_expected_type.is_pointer_type() {
+                                        right_ptr.into()
+                                    } else if rhs_expected_type.is_struct_type() {
+                                        let st = rhs_expected_type.into_struct_type();
+                                        let alloca = self.builder.build_alloca(st, "")?;
+                                        let field0 =
+                                            self.builder.build_struct_gep(st, alloca, 0, "")?;
+                                        self.builder.build_store(field0, right_ptr)?;
+                                        let field1 =
+                                            self.builder.build_struct_gep(st, alloca, 1, "")?;
+                                        let null_ptr = self
+                                            .context
+                                            .ptr_type(inkwell::AddressSpace::from(0))
+                                            .const_null();
+                                        self.builder.build_store(field1, null_ptr)?;
+                                        let loaded = self.builder.build_load(st, alloca, "")?;
+                                        loaded.into()
                                     } else {
                                         right_ptr.into()
-                                    };
-                                    args.push(rhs_arg);
-
-                                    let call_result = self.builder.build_call(f, &args, "")?;
-                                    match call_result.try_as_basic_value() {
-                                        inkwell::values::ValueKind::Basic(val) => {
-                                            return Ok(Some(val));
-                                        }
-                                        _ => return Ok(None),
                                     }
+                                } else {
+                                    right_ptr.into()
+                                };
+                                args.push(rhs_arg);
+
+                                let call_result = self.builder.build_call(f, &args, "")?;
+                                match call_result.try_as_basic_value() {
+                                    inkwell::values::ValueKind::Basic(val) => {
+                                        return Ok(Some(val));
+                                    }
+                                    _ => return Ok(None),
                                 }
                             }
                         }
@@ -7117,9 +7268,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                 }
                                 None => self.context.i8_type().as_basic_type_enum(),
                             };
-                            let gep = unsafe {
-                                self.builder.build_gep(elem_ty, ptr, &[offset], "")?
-                            };
+                            let gep =
+                                unsafe { self.builder.build_gep(elem_ty, ptr, &[offset], "")? };
                             Ok(Some(gep.into()))
                         } else {
                             anyhow::bail!("Invalid types for addition");
@@ -7162,9 +7312,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                 None => self.context.i8_type().as_basic_type_enum(),
                             };
                             let neg_offset = self.builder.build_int_neg(offset, "")?;
-                            let gep = unsafe {
-                                self.builder.build_gep(elem_ty, ptr, &[neg_offset], "")?
-                            };
+                            let gep =
+                                unsafe { self.builder.build_gep(elem_ty, ptr, &[neg_offset], "")? };
                             Ok(Some(gep.into()))
                         } else {
                             anyhow::bail!("Invalid types for subtraction");
@@ -7239,6 +7388,50 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .build_int_compare(inkwell::IntPredicate::EQ, l_int, r_int, "")?
                                     .into(),
                             ))
+                        } else if let (
+                            BasicValueEnum::PointerValue(l),
+                            BasicValueEnum::StructValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let r_ptr = self
+                                .builder
+                                .build_extract_value(r, 0, "")?
+                                .into_pointer_value();
+                            let l_int =
+                                self.builder
+                                    .build_ptr_to_int(l, self.context.i64_type(), "")?;
+                            let r_int = self.builder.build_ptr_to_int(
+                                r_ptr,
+                                self.context.i64_type(),
+                                "",
+                            )?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::EQ, l_int, r_int, "")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::StructValue(l),
+                            BasicValueEnum::PointerValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let l_ptr = self
+                                .builder
+                                .build_extract_value(l, 0, "")?
+                                .into_pointer_value();
+                            let l_int = self.builder.build_ptr_to_int(
+                                l_ptr,
+                                self.context.i64_type(),
+                                "",
+                            )?;
+                            let r_int =
+                                self.builder
+                                    .build_ptr_to_int(r, self.context.i64_type(), "")?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::EQ, l_int, r_int, "")?
+                                    .into(),
+                            ))
                         } else {
                             anyhow::bail!("Invalid types for equality comparison");
                         }
@@ -7278,6 +7471,50 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .build_int_compare(inkwell::IntPredicate::NE, l_int, r_int, "")?
                                     .into(),
                             ))
+                        } else if let (
+                            BasicValueEnum::PointerValue(l),
+                            BasicValueEnum::StructValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let r_ptr = self
+                                .builder
+                                .build_extract_value(r, 0, "")?
+                                .into_pointer_value();
+                            let l_int =
+                                self.builder
+                                    .build_ptr_to_int(l, self.context.i64_type(), "")?;
+                            let r_int = self.builder.build_ptr_to_int(
+                                r_ptr,
+                                self.context.i64_type(),
+                                "",
+                            )?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::NE, l_int, r_int, "")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::StructValue(l),
+                            BasicValueEnum::PointerValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let l_ptr = self
+                                .builder
+                                .build_extract_value(l, 0, "")?
+                                .into_pointer_value();
+                            let l_int = self.builder.build_ptr_to_int(
+                                l_ptr,
+                                self.context.i64_type(),
+                                "",
+                            )?;
+                            let r_int =
+                                self.builder
+                                    .build_ptr_to_int(r, self.context.i64_type(), "")?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::NE, l_int, r_int, "")?
+                                    .into(),
+                            ))
                         } else {
                             anyhow::bail!("Invalid types for inequality comparison");
                         }
@@ -7305,7 +7542,18 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .into(),
                             ))
                         } else {
-                            anyhow::bail!("Invalid types for less than comparison");
+                            let l_int = self.to_i64_for_compare(left_val)?;
+                            let r_int = self.to_i64_for_compare(right_val)?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::SLT,
+                                        l_int,
+                                        r_int,
+                                        "",
+                                    )?
+                                    .into(),
+                            ))
                         }
                     }
                     BinaryOperator::LessEqual => {
@@ -7331,7 +7579,18 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .into(),
                             ))
                         } else {
-                            anyhow::bail!("Invalid types for less than or equal comparison");
+                            let l_int = self.to_i64_for_compare(left_val)?;
+                            let r_int = self.to_i64_for_compare(right_val)?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::SLE,
+                                        l_int,
+                                        r_int,
+                                        "",
+                                    )?
+                                    .into(),
+                            ))
                         }
                     }
                     BinaryOperator::Greater => {
@@ -7357,7 +7616,18 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .into(),
                             ))
                         } else {
-                            anyhow::bail!("Invalid types for greater than comparison");
+                            let l_int = self.to_i64_for_compare(left_val)?;
+                            let r_int = self.to_i64_for_compare(right_val)?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::SGT,
+                                        l_int,
+                                        r_int,
+                                        "",
+                                    )?
+                                    .into(),
+                            ))
                         }
                     }
                     BinaryOperator::GreaterEqual => {
@@ -7383,7 +7653,18 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .into(),
                             ))
                         } else {
-                            anyhow::bail!("Invalid types for greater than or equal comparison");
+                            let l_int = self.to_i64_for_compare(left_val)?;
+                            let r_int = self.to_i64_for_compare(right_val)?;
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::SGE,
+                                        l_int,
+                                        r_int,
+                                        "",
+                                    )?
+                                    .into(),
+                            ))
                         }
                     }
                     BinaryOperator::And => {
@@ -8680,33 +8961,27 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                     if let Some(ty) = &sub_ty
-                        && let Type::Pointer(inner) | Type::NonNullPointer(inner) =
-                            &*ty.borrow()
+                        && let Type::Pointer(inner) | Type::NonNullPointer(inner) = &*ty.borrow()
                     {
                         let inner = inner.clone();
-                        let object_val =
-                            self.resolve_expression(sub_object.clone())?.unwrap();
+                        let object_val = self.resolve_expression(sub_object.clone())?.unwrap();
                         let ptr = if let BasicValueEnum::PointerValue(p) = object_val {
                             p
                         } else {
-                            let alloca = self
-                                .builder
-                                .build_alloca(object_val.get_type(), "")?;
+                            let alloca = self.builder.build_alloca(object_val.get_type(), "")?;
                             self.builder.build_store(alloca, object_val)?;
                             alloca
                         };
                         let element_type = self.resolve_type(inner)?;
                         for p in sub_params {
-                            let idx_val =
-                                self.resolve_expression(p.expression.clone())?.unwrap();
+                            let idx_val = self.resolve_expression(p.expression.clone())?.unwrap();
                             let idx_int = if let BasicValueEnum::IntValue(i) = idx_val {
                                 i
                             } else {
                                 anyhow::bail!("Pointer subscript index must be integer");
                             };
                             let addr = unsafe {
-                                self.builder
-                                    .build_gep(element_type, ptr, &[idx_int], "")?
+                                self.builder.build_gep(element_type, ptr, &[idx_int], "")?
                             };
                             self.builder.build_store(addr, right_val)?;
                         }
@@ -11079,9 +11354,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                         .program_scope
                                         .borrow()
                                         .as_ref()
-                                        .and_then(|scope| {
-                                            scope.borrow().get_symbol_deep(&fn_name)
-                                        })
+                                        .and_then(|scope| scope.borrow().get_symbol_deep(&fn_name))
                                         .and_then(|sym| {
                                             let sym_b = sym.borrow();
                                             if let Symbol::Class { decl, .. } = &*sym_b {
@@ -11096,9 +11369,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                         self.register_mangled_name(&init_name, &mangled);
                                         if self.module.get_function(&mangled).is_none() {
                                             let void_ty = Rc::new(RefCell::new(Type::Void));
-                                            let self_param = Rc::new(RefCell::new(
-                                                Type::Pointer(Rc::new(RefCell::new(Type::Void))),
-                                            ));
+                                            let self_param = Rc::new(RefCell::new(Type::Pointer(
+                                                Rc::new(RefCell::new(Type::Void)),
+                                            )));
                                             if let Ok(fn_type) = self.get_function_type(
                                                 void_ty,
                                                 vec![self_param],
@@ -11117,7 +11390,6 @@ impl<'ctx> IRGenerator<'ctx> {
                             let object_expr = object.borrow();
                             let object_ty = object_expr.get_ty_ref()?.clone();
                             drop(object_expr);
-
 
                             if let Some(ty) = &object_ty
                                 && let Type::Enum(enum_name, ..) = &*ty.borrow()
@@ -11367,7 +11639,6 @@ impl<'ctx> IRGenerator<'ctx> {
                                     }
                                 }
 
-                                // Static dispatch for final class or final method
                                 if self.is_final_class(class_name)
                                     || self.is_final_method(class_name, method_name)
                                 {
@@ -12022,8 +12293,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .cloned()
                                     .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
                                 if self.module.get_function(&mangled).is_none() {
-                                    let is_class =
-                                        matches!(&*ty.borrow(), Type::Class(..));
+                                    let is_class = matches!(&*ty.borrow(), Type::Class(..));
                                     let type_decl = self
                                         .program_scope
                                         .borrow()
@@ -12058,9 +12328,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                         self.register_mangled_name(&init_name, &mangled);
                                         if self.module.get_function(&mangled).is_none() {
                                             let void_ty = Rc::new(RefCell::new(Type::Void));
-                                            let self_param = Rc::new(RefCell::new(
-                                                Type::Pointer(Rc::new(RefCell::new(Type::Void))),
-                                            ));
+                                            let self_param = Rc::new(RefCell::new(Type::Pointer(
+                                                Rc::new(RefCell::new(Type::Void)),
+                                            )));
                                             if let Ok(fn_type) = self.get_function_type(
                                                 void_ty,
                                                 vec![self_param],
@@ -13596,6 +13866,66 @@ impl<'ctx> IRGenerator<'ctx> {
                         member.value
                     );
                 }
+            }
+            Expression::Case {
+                enum_type,
+                case_name,
+                expression,
+                ..
+            } => {
+                let subject_val = self.resolve_expression(expression.clone())?.unwrap();
+                let subject_alloca = self.builder.build_alloca(subject_val.get_type(), "")?;
+                self.builder.build_store(subject_alloca, subject_val)?;
+                let enum_name = if let Some(t) = enum_type.as_ref() {
+                    t.value.clone()
+                } else if let Some(name) = self.get_enum_name_from_expr_string(expression.clone()) {
+                    name
+                } else {
+                    let subject_ty = expression.borrow().get_ty().ok().flatten();
+                    if let Some(ty) = &subject_ty
+                        && let Type::Enum(name, _, _) = &*ty.borrow()
+                    {
+                        name.clone()
+                    } else {
+                        anyhow::bail!("Case expression without enum type")
+                    }
+                };
+                let case_idx = self.get_enum_case_index(&enum_name, &case_name.value)?;
+                let enum_types = self.enum_types.borrow();
+                let enum_llvm_type = enum_types
+                    .get(&enum_name)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("Enum type '{}' not found", enum_name))?;
+                drop(enum_types);
+                let match_result = if let Some(raw_ty) = self.get_enum_raw_llvm_type(&enum_name) {
+                    let raw_ptr =
+                        self.builder
+                            .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
+                    let tag_val = self.builder.build_load(raw_ty, raw_ptr, "")?;
+                    let tag_value = self.get_enum_case_tag_value(&enum_name, &case_name.value)?;
+                    let expected_tag = raw_ty.into_int_type().const_int(tag_value, false);
+                    self.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        tag_val.into_int_value(),
+                        expected_tag,
+                        "",
+                    )?
+                } else {
+                    let tag_ptr =
+                        self.builder
+                            .build_struct_gep(enum_llvm_type, subject_alloca, 0, "")?;
+                    let tag_val = self
+                        .builder
+                        .build_load(self.context.i8_type(), tag_ptr, "")?;
+                    let expected_tag = self.context.i8_type().const_int(case_idx as u64, false);
+                    self.builder.build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        tag_val.into_int_value(),
+                        expected_tag,
+                        "",
+                    )?
+                };
+                Ok(Some(match_result.into()))
             }
             _ => anyhow::bail!("Expression type not implemented"),
         }
