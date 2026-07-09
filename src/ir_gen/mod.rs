@@ -7092,6 +7092,35 @@ impl<'ctx> IRGenerator<'ctx> {
                         ) = (left_val, right_val)
                         {
                             Ok(Some(self.builder.build_float_add(l, r, "")?.into()))
+                        } else if let (
+                            BasicValueEnum::PointerValue(ptr),
+                            BasicValueEnum::IntValue(offset),
+                        ) = (left_val, right_val)
+                        {
+                            let inner_rc = left_ty.as_ref().and_then(|ty| {
+                                let ty_ref = ty.borrow();
+                                match &*ty_ref {
+                                    Type::Pointer(inner) | Type::NonNullPointer(inner) => {
+                                        Some(inner.clone())
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            let elem_ty = match inner_rc {
+                                Some(inner) => {
+                                    let is_void = matches!(&*inner.borrow(), Type::Void);
+                                    if is_void {
+                                        self.context.i8_type().as_basic_type_enum()
+                                    } else {
+                                        self.resolve_type(inner)?
+                                    }
+                                }
+                                None => self.context.i8_type().as_basic_type_enum(),
+                            };
+                            let gep = unsafe {
+                                self.builder.build_gep(elem_ty, ptr, &[offset], "")?
+                            };
+                            Ok(Some(gep.into()))
                         } else {
                             anyhow::bail!("Invalid types for addition");
                         }
@@ -7107,6 +7136,36 @@ impl<'ctx> IRGenerator<'ctx> {
                         ) = (left_val, right_val)
                         {
                             Ok(Some(self.builder.build_float_sub(l, r, "")?.into()))
+                        } else if let (
+                            BasicValueEnum::PointerValue(ptr),
+                            BasicValueEnum::IntValue(offset),
+                        ) = (left_val, right_val)
+                        {
+                            let inner_rc = left_ty.as_ref().and_then(|ty| {
+                                let ty_ref = ty.borrow();
+                                match &*ty_ref {
+                                    Type::Pointer(inner) | Type::NonNullPointer(inner) => {
+                                        Some(inner.clone())
+                                    }
+                                    _ => None,
+                                }
+                            });
+                            let elem_ty = match inner_rc {
+                                Some(inner) => {
+                                    let is_void = matches!(&*inner.borrow(), Type::Void);
+                                    if is_void {
+                                        self.context.i8_type().as_basic_type_enum()
+                                    } else {
+                                        self.resolve_type(inner)?
+                                    }
+                                }
+                                None => self.context.i8_type().as_basic_type_enum(),
+                            };
+                            let neg_offset = self.builder.build_int_neg(offset, "")?;
+                            let gep = unsafe {
+                                self.builder.build_gep(elem_ty, ptr, &[neg_offset], "")?
+                            };
+                            Ok(Some(gep.into()))
                         } else {
                             anyhow::bail!("Invalid types for subtraction");
                         }
