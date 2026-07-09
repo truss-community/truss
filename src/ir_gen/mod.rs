@@ -12014,10 +12014,64 @@ impl<'ctx> IRGenerator<'ctx> {
                                         anyhow::bail!("Self(...) on non-struct/class type");
                                     }
                                 };
-                                (
-                                    self.mangle_fn_name(&format!("{}.init", type_name), &[]),
-                                    true,
-                                )
+                                let init_name = format!("{}.init", type_name);
+                                let mangled = self
+                                    .mangled_fn_names
+                                    .borrow()
+                                    .get(&init_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
+                                if self.module.get_function(&mangled).is_none() {
+                                    let is_class =
+                                        matches!(&*ty.borrow(), Type::Class(..));
+                                    let type_decl = self
+                                        .program_scope
+                                        .borrow()
+                                        .as_ref()
+                                        .and_then(|scope| {
+                                            scope.borrow().get_symbol_deep(&type_name)
+                                        })
+                                        .and_then(|sym| {
+                                            let sym_b = sym.borrow();
+                                            if is_class {
+                                                if let Symbol::Class { decl, .. } = &*sym_b {
+                                                    Some(decl.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            } else {
+                                                if let Symbol::Struct { decl, .. } = &*sym_b {
+                                                    Some(decl.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                        });
+                                    if let Some(decl) = type_decl {
+                                        if is_class {
+                                            self.declare_class_types(decl.clone());
+                                            self.create_class_type_bodies(decl);
+                                        } else {
+                                            self.declare_struct_types(decl.clone());
+                                            self.create_struct_type_bodies(decl);
+                                        }
+                                        self.register_mangled_name(&init_name, &mangled);
+                                        if self.module.get_function(&mangled).is_none() {
+                                            let void_ty = Rc::new(RefCell::new(Type::Void));
+                                            let self_param = Rc::new(RefCell::new(
+                                                Type::Pointer(Rc::new(RefCell::new(Type::Void))),
+                                            ));
+                                            if let Ok(fn_type) = self.get_function_type(
+                                                void_ty,
+                                                vec![self_param],
+                                                false,
+                                            ) {
+                                                self.module.add_function(&mangled, fn_type, None);
+                                            }
+                                        }
+                                    }
+                                }
+                                (mangled, true)
                             } else {
                                 self.emit_error(
                                     TrussDiagnosticCode::TypeInferenceFailed,
