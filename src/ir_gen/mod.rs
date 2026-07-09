@@ -11016,7 +11016,42 @@ impl<'ctx> IRGenerator<'ctx> {
                                 {
                                     (mangled, true)
                                 } else {
-                                    (fn_name, false)
+                                    let class_decl = self
+                                        .program_scope
+                                        .borrow()
+                                        .as_ref()
+                                        .and_then(|scope| {
+                                            scope.borrow().get_symbol_deep(&fn_name)
+                                        })
+                                        .and_then(|sym| {
+                                            let sym_b = sym.borrow();
+                                            if let Symbol::Class { decl, .. } = &*sym_b {
+                                                Some(decl.clone())
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    if let Some(decl) = class_decl {
+                                        self.declare_class_types(decl.clone());
+                                        self.create_class_type_bodies(decl);
+                                        self.register_mangled_name(&init_name, &mangled);
+                                        if self.module.get_function(&mangled).is_none() {
+                                            let void_ty = Rc::new(RefCell::new(Type::Void));
+                                            let self_param = Rc::new(RefCell::new(
+                                                Type::Pointer(Rc::new(RefCell::new(Type::Void))),
+                                            ));
+                                            if let Ok(fn_type) = self.get_function_type(
+                                                void_ty,
+                                                vec![self_param],
+                                                false,
+                                            ) {
+                                                self.module.add_function(&mangled, fn_type, None);
+                                            }
+                                        }
+                                        (mangled, true)
+                                    } else {
+                                        (fn_name, false)
+                                    }
                                 }
                             }
                         } else {
@@ -14196,7 +14231,12 @@ impl<'ctx> IRGenerator<'ctx> {
             Expression::Variable { symbol, .. } => symbol
                 .as_ref()
                 .and_then(|ws| ws.0.upgrade())
-                .is_some_and(|sym| matches!(&*sym.borrow(), Symbol::Module { .. })),
+                .is_some_and(|sym| {
+                    matches!(
+                        &*sym.borrow(),
+                        Symbol::Module { .. } | Symbol::Package { .. }
+                    )
+                }),
             Expression::MemberAccess { object, .. } => self.is_module_expression(object),
             _ => false,
         }
