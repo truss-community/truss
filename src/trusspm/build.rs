@@ -60,7 +60,6 @@ impl BuildOrchestrator {
         let _build_directives =
             crate::trusspm::cli::process_build_truss(project_path, &self.packages);
 
-        // Auto-detect and load standard library from active toolchain
         let mut stdlib_stmts: Vec<Rc<RefCell<Statement>>> = Vec::new();
         if let Some(std_path) = crate::trusspm::find_stdlib_path() {
             let truss_pkg = Rc::new(RefCell::new(Package::new("Truss".to_string())));
@@ -123,30 +122,28 @@ impl BuildOrchestrator {
                         let triple = TargetTriple::host();
                         let mut symbols = predefined_symbols(&path_str);
                         flatten_program(&mut stmts, &triple, &mut symbols);
-                        if let Ok(meta) = std::fs::metadata(path) {
-                            if let Ok(mtime) = meta.modified() {
-                                self.file_cache.insert(
-                                    path_str,
-                                    CachedBuildFile {
-                                        mtime,
-                                        statements: stmts.clone(),
-                                    },
-                                );
-                            }
+                        if let Ok(meta) = std::fs::metadata(path)
+                            && let Ok(mtime) = meta.modified()
+                        {
+                            self.file_cache.insert(
+                                path_str,
+                                CachedBuildFile {
+                                    mtime,
+                                    statements: stmts.clone(),
+                                },
+                            );
                         }
                         file_programs.push(stmts);
                     }
                 }
 
                 if !file_programs.is_empty() {
-                    // Collect all std statements
                     for file_stmts in &file_programs {
                         for stmt in file_stmts {
                             stdlib_stmts.push(stmt.clone());
                         }
                     }
 
-                    // Symbol resolve std library
                     let std_prog = Program {
                         file: Rc::new("stdlib".to_string()),
                         statements: stdlib_stmts.clone(),
@@ -158,7 +155,6 @@ impl BuildOrchestrator {
                     );
                     let std_module = std_resolver.resolve(&std_prog, "Truss".to_string());
 
-                    // Type resolve std library
                     let mut std_type_resolver = TypeResolver::new(
                         self.packages.clone(),
                         "Truss".to_string(),
@@ -321,7 +317,8 @@ impl BuildOrchestrator {
                     }
                     return;
                 }
-                self.local_target_stmts.push((target_name.clone(), file_stmts.clone()));
+                self.local_target_stmts
+                    .push((target_name.clone(), file_stmts.clone()));
             }
         }
 
@@ -572,10 +569,13 @@ impl BuildOrchestrator {
                     file: Rc::new(target_name.clone()),
                     statements: target_stmts.clone(),
                 };
-                let target_ir_gen = IRGenerator::new(&context, ir_engine.clone())
-                    .with_namespace(target_name, "");
-                let result =
-                    target_ir_gen.generate_with_stdlib(&target_prog, &stdlib_stmts, main_scope.clone());
+                let target_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(target_name, "");
+                let result = target_ir_gen.generate_with_stdlib(
+                    &target_prog,
+                    &stdlib_stmts,
+                    main_scope.clone(),
+                );
                 if stdlib_to_emit.is_none() {
                     stdlib_to_emit = result.stdlib.clone();
                 }
@@ -670,35 +670,34 @@ impl BuildOrchestrator {
                 return;
             }
 
-            let combined_file_module: Option<inkwell::module::Module<'_>> =
-                if file_modules.is_empty() {
-                    let single_ir_gen = IRGenerator::new(&context, ir_engine.clone())
-                        .with_namespace(&pkg_name, "");
-                    let modules =
-                        single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
-                    if ir_engine.borrow().has_errors() {
-                        let formatted =
-                            duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);
-                        if !formatted.is_empty() {
-                            eprintln!("{}", formatted);
-                        }
-                        return;
+            let combined_file_module: Option<inkwell::module::Module<'_>> = if file_modules
+                .is_empty()
+            {
+                let single_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
+                let modules = single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
+                if ir_engine.borrow().has_errors() {
+                    let formatted = duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);
+                    if !formatted.is_empty() {
+                        eprintln!("{}", formatted);
                     }
-                    if stdlib_to_emit.is_none() {
-                        stdlib_to_emit = modules.stdlib.clone();
+                    return;
+                }
+                if stdlib_to_emit.is_none() {
+                    stdlib_to_emit = modules.stdlib.clone();
+                }
+                Some((*modules.main).clone())
+            } else if file_modules.len() == 1 {
+                Some(file_modules.remove(0).1)
+            } else {
+                let (_, target_module) = file_modules.remove(0);
+                for (_, module) in file_modules {
+                    if let Err(e) = target_module.link_in_module(module) {
+                        eprintln!("warning: failed to link module: {}", e);
                     }
-                    Some((*modules.main).clone())
-                } else if file_modules.len() == 1 {
-                    Some(file_modules.remove(0).1)
-                } else {
-                    let (_, target_module) = file_modules.remove(0);
-                    for (_, module) in file_modules {
-                        if let Err(e) = target_module.link_in_module(module) {
-                            eprintln!("warning: failed to link module: {}", e);
-                        }
-                    }
-                    Some(target_module)
-                };
+                }
+                Some(target_module)
+            };
 
             let triple = TargetTriple::host().to_triple_string();
             let build_dir = project_path.join("Build");
