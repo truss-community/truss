@@ -39,6 +39,7 @@ pub mod emit;
 
 struct Scope<'ctx> {
     variables: HashMap<String, PointerValue<'ctx>>,
+    variable_types: HashMap<String, BasicTypeEnum<'ctx>>,
     deferred_vars: Vec<(PointerValue<'ctx>, String)>,
     deferred_blocks: Vec<Vec<Rc<RefCell<Statement>>>>,
 }
@@ -47,6 +48,7 @@ impl<'ctx> Scope<'ctx> {
     fn new() -> Self {
         Self {
             variables: HashMap::new(),
+            variable_types: HashMap::new(),
             deferred_vars: Vec::new(),
             deferred_blocks: Vec::new(),
         }
@@ -190,7 +192,7 @@ impl<'ctx> IRGenerator<'ctx> {
 
                 let alloca_name = self.unique_alloca_name(&name.value);
                 let ptr = self.builder.build_alloca(llvm_type, &alloca_name)?;
-                self.declare_variable(name.value.clone(), ptr);
+                self.declare_variable_typed(name.value.clone(), ptr, llvm_type);
 
                 if let Some(ty) = ty {
                     let ty_borrow = ty.borrow();
@@ -332,6 +334,28 @@ impl<'ctx> IRGenerator<'ctx> {
             .unwrap()
             .variables
             .insert(name, ptr);
+    }
+
+    fn declare_variable_typed(
+        &self,
+        name: String,
+        ptr: PointerValue<'ctx>,
+        ty: BasicTypeEnum<'ctx>,
+    ) {
+        let mut stack = self.scope_stack.borrow_mut();
+        let scope = stack.last_mut().unwrap();
+        scope.variables.insert(name.clone(), ptr);
+        scope.variable_types.insert(name, ty);
+    }
+
+    fn lookup_variable_type(&self, name: &str) -> Option<BasicTypeEnum<'ctx>> {
+        let stack = self.scope_stack.borrow();
+        for scope in stack.iter().rev() {
+            if let Some(ty) = scope.variable_types.get(name) {
+                return Some(*ty);
+            }
+        }
+        None
     }
 
     fn lookup_variable(&self, name: &str) -> Option<PointerValue<'ctx>> {
@@ -6854,6 +6878,8 @@ impl<'ctx> IRGenerator<'ctx> {
                 } else if let Some(ptr) = self.lookup_variable(&name.value) {
                     let llvm_type = if let Some(ty) = ty {
                         self.resolve_type(ty.clone())?
+                    } else if let Some(stored_ty) = self.lookup_variable_type(&name.value) {
+                        stored_ty
                     } else {
                         self.emit_error(
                             TrussDiagnosticCode::TypeInferenceFailed,
@@ -6874,6 +6900,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.declare_variable(name.value.clone(), field_ptr);
                     let llvm_type = if let Some(ty) = ty {
                         self.resolve_type(ty.clone())?
+                    } else if let Some(stored_ty) = self.lookup_variable_type(&name.value) {
+                        stored_ty
                     } else {
                         self.emit_error(
                             TrussDiagnosticCode::TypeInferenceFailed,
@@ -7023,6 +7051,13 @@ impl<'ctx> IRGenerator<'ctx> {
                         let val = self.builder.build_load(llvm_type, ptr, "")?;
                         Ok(Some(val))
                     } else {
+                        if let Some(ref sname) = *self.current_struct.borrow() {
+                            if self.struct_types.borrow().contains_key(sname)
+                                || self.class_types.borrow().contains_key(sname)
+                            {
+                                return Ok(Some(ptr.into()));
+                            }
+                        }
                         self.emit_error(
                             TrussDiagnosticCode::TypeInferenceFailed,
                             "Cannot infer type for 'self'",
@@ -9982,10 +10017,22 @@ impl<'ctx> IRGenerator<'ctx> {
                 let object_ty = object_expr.get_ty_ref()?.clone();
                 drop(object_expr);
 
-                if let Some(ty) = &object_ty
-                    && let Type::Struct(struct_name, ..) = &*ty.borrow()
+                let struct_name = object_ty.as_ref().and_then(|ty| {
+                    let ty_borrow = ty.borrow();
+                    match &*ty_borrow {
+                        Type::Struct(name, ..) => Some(name.clone()),
+                        Type::Inline(inner, _) => match &*inner.borrow() {
+                            Type::Struct(name, ..) => Some(name.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }).or_else(|| {
+                    let name = self.infer_type_name_from_expr(object)?;
+                    if self.struct_types.borrow().contains_key(&name) { Some(name) } else { None }
+                });
+                if let Some(struct_name) = struct_name
                 {
-                    let struct_name = struct_name.clone();
                     let field_name = member.value.clone();
 
                     if self.has_dynamic_member_lookup(&struct_name) {
@@ -10229,10 +10276,22 @@ impl<'ctx> IRGenerator<'ctx> {
                     return Ok(Some(field_val));
                 }
 
-                if let Some(ty) = &object_ty
-                    && let Type::Class(class_name, ..) = &*ty.borrow()
+                let class_name = object_ty.as_ref().and_then(|ty| {
+                    let ty_borrow = ty.borrow();
+                    match &*ty_borrow {
+                        Type::Class(name, ..) => Some(name.clone()),
+                        Type::Inline(inner, _) => match &*inner.borrow() {
+                            Type::Class(name, ..) => Some(name.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }).or_else(|| {
+                    let name = self.infer_type_name_from_expr(object)?;
+                    if self.class_types.borrow().contains_key(&name) { Some(name) } else { None }
+                });
+                if let Some(class_name) = class_name
                 {
-                    let class_name = class_name.clone();
                     let field_name = member.value.clone();
 
                     if self.has_dynamic_member_lookup(&class_name) {
@@ -14665,6 +14724,77 @@ impl<'ctx> IRGenerator<'ctx> {
         anyhow::bail!("Cannot get field type")
     }
 
+    fn infer_member_type_from_symbol_table(
+        &self,
+        object: Rc<RefCell<Expression>>,
+        member_name: &str,
+    ) -> Option<Rc<RefCell<Type>>> {
+        let type_name = self.infer_type_name_from_expr(&object)?;
+        let scope_guard = self.program_scope.borrow();
+        let scope = scope_guard.as_ref()?;
+        let symbol = scope.borrow().get_symbol_deep(&type_name)?;
+        let sym_ref = symbol.borrow();
+        let properties = match &*sym_ref {
+            Symbol::Struct { properties, .. } | Symbol::Class { properties, .. } => properties,
+            _ => return None,
+        };
+        for prop in properties.iter() {
+            if prop.borrow().name().as_ref().ok() != Some(&member_name.to_string()) {
+                continue;
+            }
+            if let Some(decl) = prop.borrow().get_decl().ok().flatten()
+                && let Statement::VariableDecl { ty: Some(ty), .. } = &*decl.borrow()
+            {
+                return Some(ty.clone());
+            }
+            break;
+        }
+        None
+    }
+
+    fn infer_type_name_from_expr(&self, expr: &Rc<RefCell<Expression>>) -> Option<String> {
+        let (ty_opt, object, member_value) = {
+            let e = expr.borrow();
+            match &*e {
+                Expression::SelfKeyword { ty, .. } => (ty.clone(), None, None),
+                Expression::Variable { ty, .. } => (ty.clone(), None, None),
+                Expression::MemberAccess { ty, object, member, .. } => {
+                    (ty.clone(), Some(object.clone()), Some(member.value.clone()))
+                }
+                _ => (None, None, None),
+            }
+        };
+        if let Some(ty) = ty_opt {
+            let ty_borrow = ty.borrow();
+            return match &*ty_borrow {
+                Type::Struct(name, ..) | Type::Class(name, ..) => Some(name.clone()),
+                Type::Inline(inner, _) => match &*inner.borrow() {
+                    Type::Struct(name, ..) | Type::Class(name, ..) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        if let (Some(object), Some(member_value)) = (object, member_value) {
+            return self.infer_member_type_from_symbol_table(object, &member_value)
+                .and_then(|prop_ty| {
+                    let b = prop_ty.borrow();
+                    match &*b {
+                        Type::Struct(name, ..) | Type::Class(name, ..) => Some(name.clone()),
+                        Type::Inline(inner, _) => match &*inner.borrow() {
+                            Type::Struct(name, ..) | Type::Class(name, ..) => Some(name.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                });
+        }
+        if matches!(&*expr.borrow(), Expression::SelfKeyword { .. }) {
+            return self.current_struct.borrow().clone();
+        }
+        None
+    }
+
     fn infer_type_from_expression(
         &self,
         expr: Rc<RefCell<Expression>>,
@@ -14686,15 +14816,10 @@ impl<'ctx> IRGenerator<'ctx> {
             }
             Expression::BooleanLiteral { .. } => Ok(self.context.bool_type().into()),
             Expression::CharLiteral { .. } => Ok(self.context.i8_type().into()),
-            Expression::Variable { ty, name, .. } => {
+            Expression::Variable { ty, .. } => {
                 if let Some(ty) = ty {
                     self.resolve_type(ty.clone())
                 } else {
-                    self.emit_error(
-                        TrussDiagnosticCode::TypeInferenceFailed,
-                        "Cannot infer type from variable without type annotation",
-                        Some(name),
-                    );
                     anyhow::bail!("Cannot infer type from variable")
                 }
             }
@@ -14716,10 +14841,16 @@ impl<'ctx> IRGenerator<'ctx> {
                     anyhow::bail!("Cannot infer type")
                 }
             }
-            Expression::MemberAccess { ty, .. } => {
+            Expression::MemberAccess { ty, object, member, .. } => {
                 if let Some(ty) = ty {
                     self.resolve_type(ty.clone())
                 } else {
+                    let member_name = member.value.clone();
+                    if let Some(prop_ty) =
+                        self.infer_member_type_from_symbol_table(object.clone(), &member_name)
+                    {
+                        return self.resolve_type(prop_ty);
+                    }
                     anyhow::bail!("Cannot infer type")
                 }
             }
