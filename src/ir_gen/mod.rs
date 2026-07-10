@@ -10,7 +10,7 @@ use inkwell::{
     builder::Builder,
     context::Context,
     module::Module,
-    types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
+    types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     values::{
         BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
     },
@@ -1009,6 +1009,52 @@ impl<'ctx> IRGenerator<'ctx> {
         self.emit_class_releases();
         self.builder.build_return(Some(&optional_val))?;
         Ok(())
+    }
+
+    fn build_optional_some_value(
+        &self,
+        val: BasicValueEnum<'ctx>,
+        optional_llvm_ty: StructType<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let payloads_type = optional_llvm_ty
+            .get_field_type_at_index(1)
+            .ok_or_else(|| anyhow::anyhow!("Optional payloads field not found"))?
+            .into_struct_type();
+        let some_payload_type = payloads_type
+            .get_field_type_at_index(1)
+            .ok_or_else(|| anyhow::anyhow!("Some payload slot not found"))?
+            .into_struct_type();
+        let alloca = self.builder.build_alloca(optional_llvm_ty, "")?;
+        let tag_ptr = self.builder.build_struct_gep(optional_llvm_ty, alloca, 0, "")?;
+        self.builder
+            .build_store(tag_ptr, self.context.i8_type().const_int(1, false))?;
+        let payload_ptr = self.builder.build_struct_gep(optional_llvm_ty, alloca, 1, "")?;
+        let some_slot_ptr = self.builder.build_struct_gep(payloads_type, payload_ptr, 1, "")?;
+        let inner_ptr = self.builder.build_struct_gep(some_payload_type, some_slot_ptr, 0, "")?;
+        self.builder.build_store(inner_ptr, val)?;
+        let result = self.builder.build_load(optional_llvm_ty, alloca, "")?;
+        Ok(result)
+    }
+
+    fn maybe_wrap_for_optional_return(
+        &self,
+        val: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        if let BasicValueEnum::PointerValue(_) = &val {
+            if let Some(fn_val) = self.builder.get_insert_block().and_then(|bb| bb.get_parent()) {
+                if let Some(BasicTypeEnum::StructType(struct_ty)) = fn_val.get_type().get_return_type() {
+                    let is_optional = struct_ty
+                        .get_name()
+                        .and_then(|n| n.to_str().ok())
+                        .map(|s| s.contains("Optional"))
+                        .unwrap_or(false);
+                    if is_optional {
+                        return self.build_optional_some_value(val, struct_ty);
+                    }
+                }
+            }
+        }
+        Ok(val)
     }
 
     fn declare_enum_types(&self, statement: Rc<RefCell<Statement>>) {
@@ -5372,6 +5418,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                             let value =
                                                 self.resolve_expression(expression.clone())?;
                                             if let Some(value) = value {
+                                                let value = self.maybe_wrap_for_optional_return(value)?;
                                                 self.emit_all_deinit_calls();
                                                 self.emit_class_releases();
                                                 self.builder.build_return(Some(&value))?;
@@ -5393,6 +5440,7 @@ impl<'ctx> IRGenerator<'ctx> {
                             }
                             FunctionBody::Expression(expr) => {
                                 let value = self.resolve_expression(expr.clone())?.unwrap();
+                                let value = self.maybe_wrap_for_optional_return(value)?;
                                 self.emit_all_deinit_calls();
                                 self.emit_class_releases();
                                 self.builder.build_return(Some(&value))?;
@@ -5687,6 +5735,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 match value {
                     Some(value) if !matches!(&*value.borrow(), Expression::VoidLiteral { .. }) => {
                         let val = self.resolve_expression(value.clone())?.unwrap();
+                        let val = self.maybe_wrap_for_optional_return(val)?;
                         self.emit_all_deinit_calls();
                         self.emit_class_releases();
                         self.builder.build_return(Some(&val))?;
@@ -9518,8 +9567,15 @@ impl<'ctx> IRGenerator<'ctx> {
                     if let Some((Ok(_alloca), _)) = result_alloca.as_ref() {
                         self.yield_targets.borrow_mut().pop();
                     }
-                    if let (Some((Ok(alloca), _)), Some(val)) = (&result_alloca, then_val) {
-                        self.builder.build_store(*alloca, val)?;
+                    if let (Some((Ok(alloca), llvm_ty)), Some(val)) = (&result_alloca, then_val) {
+                        let val_to_store = if let (Some(t), BasicValueEnum::PointerValue(_)) = (ty.as_ref(), &val) {
+                            if matches!(&*t.borrow(), Type::Enum(name, ..) if name == "Optional") {
+                                if let BasicTypeEnum::StructType(struct_ty) = llvm_ty {
+                                    self.build_optional_some_value(val, *struct_ty)?
+                                } else { val }
+                            } else { val }
+                        } else { val };
+                        self.builder.build_store(*alloca, val_to_store)?;
                     }
                     if !terminates {
                         self.builder.build_unconditional_branch(exit_bb)?;
@@ -9540,8 +9596,15 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let Some((Ok(_alloca), _)) = result_alloca.as_ref() {
                             self.yield_targets.borrow_mut().pop();
                         }
-                        if let (Some((Ok(alloca), _)), Some(val)) = (&result_alloca, else_val) {
-                            self.builder.build_store(*alloca, val)?;
+                        if let (Some((Ok(alloca), llvm_ty)), Some(val)) = (&result_alloca, else_val) {
+                            let val_to_store = if let (Some(t), BasicValueEnum::PointerValue(_)) = (ty.as_ref(), &val) {
+                                if matches!(&*t.borrow(), Type::Enum(name, ..) if name == "Optional") {
+                                    if let BasicTypeEnum::StructType(struct_ty) = llvm_ty {
+                                        self.build_optional_some_value(val, *struct_ty)?
+                                    } else { val }
+                                } else { val }
+                            } else { val };
+                            self.builder.build_store(*alloca, val_to_store)?;
                         }
                         if !terminates {
                             self.builder.build_unconditional_branch(exit_bb)?;
