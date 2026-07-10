@@ -415,7 +415,9 @@ impl<'ctx> IRGenerator<'ctx> {
         self.fix_missing_terminators();
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
-        let _ = self.module.verify();
+        if let Err(e) = self.module.verify() {
+            eprintln!("[warning] stdlib module verification failed (errors may surface during linking):\n{}", e);
+        }
         let compiled_stdlib = std::mem::replace(&mut self.module, main_mod);
         let compiled_stdlib_rc = Rc::new(compiled_stdlib);
         self.stdlib_module = Some(compiled_stdlib_rc.clone());
