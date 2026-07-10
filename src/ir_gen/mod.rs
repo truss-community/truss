@@ -7891,6 +7891,52 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .build_int_compare(inkwell::IntPredicate::EQ, l_int, r_int, "")?
                                     .into(),
                             ))
+                        } else if let (
+                            BasicValueEnum::StructValue(l),
+                            BasicValueEnum::StructValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let l_field = self
+                                .builder
+                                .build_extract_value(l, 0, "eq_l")?
+                                .into_int_value();
+                            let r_field = self
+                                .builder
+                                .build_extract_value(r, 0, "eq_r")?
+                                .into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::EQ, l_field, r_field, "eq")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::PointerValue(l),
+                            BasicValueEnum::IntValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let loaded = self
+                                .builder
+                                .build_load(r.get_type(), l, "load_eq")?;
+                            let l_int = loaded.into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::EQ, l_int, r, "eq")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::IntValue(l),
+                            BasicValueEnum::PointerValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let loaded = self
+                                .builder
+                                .build_load(l.get_type(), r, "load_eq")?;
+                            let r_int = loaded.into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::EQ, l, r_int, "eq")?
+                                    .into(),
+                            ))
                         } else {
                             anyhow::bail!("Invalid types for equality comparison");
                         }
@@ -7972,6 +8018,52 @@ impl<'ctx> IRGenerator<'ctx> {
                             Ok(Some(
                                 self.builder
                                     .build_int_compare(inkwell::IntPredicate::NE, l_int, r_int, "")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::StructValue(l),
+                            BasicValueEnum::StructValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let l_field = self
+                                .builder
+                                .build_extract_value(l, 0, "ne_l")?
+                                .into_int_value();
+                            let r_field = self
+                                .builder
+                                .build_extract_value(r, 0, "ne_r")?
+                                .into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::NE, l_field, r_field, "ne")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::PointerValue(l),
+                            BasicValueEnum::IntValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let loaded = self
+                                .builder
+                                .build_load(r.get_type(), l, "load_ne")?;
+                            let l_int = loaded.into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::NE, l_int, r, "ne")?
+                                    .into(),
+                            ))
+                        } else if let (
+                            BasicValueEnum::IntValue(l),
+                            BasicValueEnum::PointerValue(r),
+                        ) = (left_val, right_val)
+                        {
+                            let loaded = self
+                                .builder
+                                .build_load(l.get_type(), r, "load_ne")?;
+                            let r_int = loaded.into_int_value();
+                            Ok(Some(
+                                self.builder
+                                    .build_int_compare(inkwell::IntPredicate::NE, l, r_int, "ne")?
                                     .into(),
                             ))
                         } else {
@@ -15418,6 +15510,13 @@ impl<'ctx> IRGenerator<'ctx> {
                         return self.resolve_type(prop_ty);
                     }
                     anyhow::bail!("Cannot infer type")
+                }
+            }
+            Expression::SubscriptAccess { ty, .. } => {
+                if let Some(ty) = ty {
+                    self.resolve_type(ty.clone())
+                } else {
+                    anyhow::bail!("Cannot infer type from subscript")
                 }
             }
             Expression::SizeOf { .. } => self.resolve_type(Rc::new(RefCell::new(Type::Struct(

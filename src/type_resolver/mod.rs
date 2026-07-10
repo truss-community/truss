@@ -7909,6 +7909,18 @@ impl TypeResolver {
                 {
                     return None;
                 }
+                // For struct/class/enum types with equality operators, always
+                // delegate to operator overload resolution so that
+                // #[autowired] == / != are found by try_resolve_binary_operator.
+                if matches!(
+                    operator,
+                    BinaryOperator::Equal | BinaryOperator::NotEqual
+                ) && matches!(
+                    &left_ty,
+                    Type::Struct(..) | Type::Class(..) | Type::Enum(..)
+                ) {
+                    return None;
+                }
                 let compatible = match (&left_ty, &right_ty) {
                     (Type::Protocol(n1, ..), Type::Protocol(n2, ..)) if n1 == n2 => true,
                     (l, r) if Self::is_integer_type(l) && Self::is_integer_type(r) => true,
