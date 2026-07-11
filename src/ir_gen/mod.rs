@@ -1117,9 +1117,28 @@ impl<'ctx> IRGenerator<'ctx> {
         let scope_ref = scope.as_ref()?;
         let symbol = scope_ref.borrow().get_symbol_deep(type_name)
             .or_else(|| scope_ref.borrow().get_symbol_qualified(type_name))?;
-        let package = match &*symbol.borrow() {
-            Symbol::Struct { package, .. } | Symbol::Class { package, .. } | Symbol::Enum { package, .. } => {
-                package.clone()
+        let (package, module) = match &*symbol.borrow() {
+            Symbol::Struct { package, decl, .. } | Symbol::Class { package, decl, .. } | Symbol::Enum { package, decl, .. } => {
+                let decl_borrow = decl.borrow();
+                let type_scope = match &*decl_borrow {
+                    Statement::StructDecl { scope, .. }
+                    | Statement::ClassDecl { scope, .. }
+                    | Statement::EnumDecl { scope, .. } => scope.as_ref().cloned(),
+                    _ => None,
+                };
+                drop(decl_borrow);
+                let module = type_scope
+                    .as_ref()
+                    .and_then(|s| {
+                        let module_name = self.resolve_qualified_name_from_scope(s);
+                        if !module_name.1.is_empty() {
+                            Some(module_name.1)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                (package.clone(), module)
             }
             _ => return None,
         };
@@ -1130,10 +1149,11 @@ impl<'ctx> IRGenerator<'ctx> {
             return None; // same package, no help
         }
         let base = format!("{}.{}", type_name, fn_suffix).replace('.', "$");
-        Some(format!(
-            "_T${}$${}$$",
-            package, base
-        ))
+        if module.is_empty() {
+            Some(format!("_T${}$${}$$", package, base))
+        } else {
+            Some(format!("_T${}${}${}$$", package, module, base))
+        }
     }
 
     fn maybe_wrap_for_optional_return(
@@ -4212,6 +4232,14 @@ impl<'ctx> IRGenerator<'ctx> {
         is_getter: bool,
         llvm_field_type: BasicTypeEnum<'ctx>,
     ) {
+        // If this is a cross-module type, check if the correctly-mangled function
+        // is already declared (from stdlib imports); if so, skip creating a duplicate.
+        let suffix = if is_getter { "getter" } else { "setter" };
+        if let Some(cross_name) = self.find_cross_module_fn_mangled(struct_name, &format!("{}.{}", field_name, suffix)) {
+            if self.module.get_function(&cross_name).is_some() {
+                return;
+            }
+        }
         let fn_name = if is_getter {
             self.mangle_fn_name(&format!("{}.{}.getter", struct_name, field_name), &[])
         } else {
@@ -10975,6 +11003,20 @@ impl<'ctx> IRGenerator<'ctx> {
                         return Ok(Some(result_val));
                     }
 
+                    // Try cross-module mangled name (type defined in another package)
+                    if let Some(cross_name) = self.find_cross_module_fn_mangled(&struct_name, &format!("{}.getter", field_name)) {
+                        if let Some(getter_fn) = self.module.get_function(&cross_name) {
+                            let result =
+                                self.builder
+                                    .build_call(getter_fn, &[struct_ptr.into()], "")?;
+                            let result_val = match result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => val,
+                                _ => anyhow::bail!("Getter call did not return a value"),
+                            };
+                            return Ok(Some(result_val));
+                        }
+                    }
+
                     let cross_module_getter_ty: Option<Rc<RefCell<Type>>> = 'search: {
                         let scope_guard = self.program_scope.borrow();
                         let Some(scope) = scope_guard.as_ref() else {
@@ -12242,6 +12284,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                             })
                                             .unwrap_or(mangled)
                                     }
+                                    None => self.find_cross_module_fn_mangled(&name, "init")
+                                        .filter(|alt| self.module.get_function(alt).is_some())
+                                        .unwrap_or(mangled),
                                     _ => mangled,
                                 };
                                 (effective, true)
@@ -12278,6 +12323,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                         })
                                         .unwrap_or(mangled)
                                 }
+                                None => self.find_cross_module_fn_mangled(&name, "init")
+                                    .filter(|alt| self.module.get_function(alt).is_some())
+                                    .unwrap_or(mangled),
                                 _ => mangled,
                             };
                             (effective, true)
@@ -12313,6 +12361,9 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .get(&init_name)
                                     .cloned()
                                     .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
+                                // Use cross-module mangled name for cross-package types
+                                let mangled = self.find_cross_module_fn_mangled(&fn_name, "init")
+                                    .unwrap_or(mangled);
                                 if self.module.get_function(&mangled).is_some()
                                     || self.class_types.borrow().contains_key(&fn_name)
                                     || self.struct_types.borrow().contains_key(&fn_name)
