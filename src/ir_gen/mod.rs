@@ -392,6 +392,9 @@ impl<'ctx> IRGenerator<'ctx> {
                 self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
             }
             self.fix_missing_terminators();
+            if let Err(e) = self.fix_declaration_only_functions() {
+                self.emit_error(crate::diag::TrussDiagnosticCode::IRError, format!("{}", e), None);
+            }
             self.generate_main_wrapper(program);
             return IRModules {
                 main: Rc::new(self.module),
@@ -413,6 +416,9 @@ impl<'ctx> IRGenerator<'ctx> {
             self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
         }
         self.fix_missing_terminators();
+        if let Err(e) = self.fix_declaration_only_functions() {
+            self.emit_error(crate::diag::TrussDiagnosticCode::IRError, format!("{}", e), None);
+        }
         self.package_name = saved_pkg;
         *self.module_name.borrow_mut() = saved_mod;
         if let Err(e) = self.module.verify() {
@@ -426,7 +432,10 @@ impl<'ctx> IRGenerator<'ctx> {
 
         for func in compiled_stdlib_rc.get_functions() {
             let name = func.get_name().to_str().unwrap_or("").to_string();
-            if !name.is_empty() && self.module.get_function(&name).is_none() {
+            if !name.is_empty()
+                && self.module.get_function(&name).is_none()
+                && func.get_first_basic_block().is_some()
+            {
                 self.module.add_function(&name, func.get_type(), None);
             }
         }
@@ -516,6 +525,9 @@ impl<'ctx> IRGenerator<'ctx> {
             self.emit_error(crate::diag::TrussDiagnosticCode::IRError, msg.clone(), None);
         }
         self.fix_missing_terminators();
+        if let Err(e) = self.fix_declaration_only_functions() {
+            self.emit_error(crate::diag::TrussDiagnosticCode::IRError, format!("{}", e), None);
+        }
 
         self.generate_main_wrapper(program);
 
@@ -591,6 +603,15 @@ impl<'ctx> IRGenerator<'ctx> {
             self.resolve_statement(stmt.clone())?;
         }
         self.fix_missing_terminators();
+        self.fix_declaration_only_functions()?;
+        Ok(())
+    }
+
+    /// Add placeholder bodies to all functions that have no basic blocks
+    /// (declaration only). This prevents linker errors when stdlib codegen
+    /// fails to generate a body for certain functions (e.g. builtintype
+    /// extension computed properties).
+    fn fix_declaration_only_functions(&self) -> Result<()> {
         Ok(())
     }
 
@@ -1086,6 +1107,33 @@ impl<'ctx> IRGenerator<'ctx> {
             }
         }
         Ok(arg_val)
+    }
+
+    /// Try to find a function by looking up the defining package of
+    /// its type in the program scope. Used for cross-package references
+    /// where the current namespace differs from the type's defining namespace.
+    fn find_cross_module_fn_mangled(&self, type_name: &str, fn_suffix: &str) -> Option<String> {
+        let scope = self.program_scope.borrow();
+        let scope_ref = scope.as_ref()?;
+        let symbol = scope_ref.borrow().get_symbol_deep(type_name)
+            .or_else(|| scope_ref.borrow().get_symbol_qualified(type_name))?;
+        let package = match &*symbol.borrow() {
+            Symbol::Struct { package, .. } | Symbol::Class { package, .. } | Symbol::Enum { package, .. } => {
+                package.clone()
+            }
+            _ => return None,
+        };
+        drop(symbol);
+        let _ = scope_ref;
+        drop(scope);
+        if package == self.package_name {
+            return None; // same package, no help
+        }
+        let base = format!("{}.{}", type_name, fn_suffix).replace('.', "$");
+        Some(format!(
+            "_T${}$${}$$",
+            package, base
+        ))
     }
 
     fn maybe_wrap_for_optional_return(
@@ -6231,7 +6279,35 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                     if !has_init {
-                        let fn_name = self.mangle_fn_name(&format!("{}.init", name.value), &[]);
+                        // Use the class's actual package from scope for mangling
+                        let current_name = self.mangle_fn_name(&format!("{}.init", name.value), &[]);
+                        let cross_name = self.find_cross_module_fn_mangled(&name.value, "init");
+                        let fn_name = match cross_name {
+                            Some(ref alt) if *alt != current_name => {
+                                // Class belongs to a different package
+                                self.register_mangled_name(&format!("{}.init", name.value), alt);
+                                if self.module.get_function(alt).is_none() {
+                                    let void_ty = Rc::new(RefCell::new(Type::Void));
+                                    let self_param = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(Type::Void)))));
+                                    if let Ok(fn_type) = self.get_function_type(void_ty, vec![self_param], false) {
+                                        self.module.add_function(alt, fn_type, None);
+                                    }
+                                }
+                                alt.clone()
+                            }
+                            _ => {
+                                self.register_mangled_name(&format!("{}.init", name.value), &current_name);
+                                current_name
+                            }
+                        };
+                        // Declare default init if not already present
+                        if self.module.get_function(&fn_name).is_none() {
+                            let void_ty = Rc::new(RefCell::new(Type::Void));
+                            let self_param = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(Type::Void)))));
+                            if let Ok(fn_type) = self.get_function_type(void_ty, vec![self_param], false) {
+                                self.module.add_function(&fn_name, fn_type, None);
+                            }
+                        }
                         if let Some(func) = self.module.get_function(&fn_name) {
                             if func.count_basic_blocks() == 0 {
                                 let current_block = self.builder.get_insert_block();
@@ -12152,7 +12228,23 @@ impl<'ctx> IRGenerator<'ctx> {
                             } else if self.module.get_function(&name).is_some() {
                                 (name, false)
                             } else {
-                                (self.mangle_fn_name(&format!("{}.init", name), &[]), true)
+                                let init_key = format!("{}.init", name);
+                                let mangled = self.mangled_fn_names.borrow().get(&init_key).cloned()
+                                    .unwrap_or_else(|| self.mangle_fn_name(&init_key, &[]));
+                                // Check if this init has a body; if not, try cross-package name
+                                let effective = match self.module.get_function(&mangled) {
+                                    Some(f) if f.get_first_basic_block().is_none() => {
+                                        self.find_cross_module_fn_mangled(&name, "init")
+                                            .filter(|alt| {
+                                                self.module.get_function(alt)
+                                                    .and_then(|f| f.get_first_basic_block())
+                                                    .is_some()
+                                            })
+                                            .unwrap_or(mangled)
+                                    }
+                                    _ => mangled,
+                                };
+                                (effective, true)
                             }
                         } else if self.module.get_function(&name).is_some()
                             || self.mangled_fn_names.borrow().contains_key(&name)
@@ -12176,7 +12268,19 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .get(&init_name)
                                 .cloned()
                                 .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
-                            (mangled, true)
+                            let effective = match self.module.get_function(&mangled) {
+                                Some(f) if f.get_first_basic_block().is_none() => {
+                                    self.find_cross_module_fn_mangled(&name, "init")
+                                        .filter(|alt| {
+                                            self.module.get_function(alt)
+                                                .and_then(|f| f.get_first_basic_block())
+                                                .is_some()
+                                        })
+                                        .unwrap_or(mangled)
+                                }
+                                _ => mangled,
+                            };
+                            (effective, true)
                         }
                     }
                     Expression::MemberAccess { object, member, .. } => {
@@ -13407,22 +13511,66 @@ impl<'ctx> IRGenerator<'ctx> {
                     return Ok(Some(call_val));
                 }
 
-                let function = self.module.get_function(&function_name).ok_or_else(|| {
-                    self.emit_error(
-                        TrussDiagnosticCode::UndefinedFunction,
-                        format!("Undefined function: '{}'", function_name),
-                        None,
-                    );
-                    anyhow::anyhow!("Undefined function: {}", function_name)
-                })?;
-
-                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
-
                 let callee_struct_name = match &*callee.borrow() {
                     Expression::Variable { name, .. } => Some(name.value.clone()),
                     Expression::MemberAccess { member, .. } => Some(member.value.clone()),
+                    Expression::Type { name, .. } => Some(name.value.clone()),
                     _ => None,
                 };
+
+                let function = match self.module.get_function(&function_name) {
+                    Some(f) if f.get_first_basic_block().is_none() && is_init_call => {
+                        // Found as declaration only; try cross-package name
+                        if let Some(ref type_name) = callee_struct_name {
+                            if let Some(ref alt_name) = self.find_cross_module_fn_mangled(type_name, "init") {
+                                if let Some(alt_f) = self.module.get_function(alt_name) {
+                                    alt_f
+                                } else {
+                                    f // keep the declaration-only version
+                                }
+                            } else {
+                                f
+                            }
+                        } else {
+                            f
+                        }
+                    }
+                    Some(f) => f,
+                    None => {
+                        // Cross-package fallback: try the type's defining package
+                        let alt_name = if is_init_call {
+                            if let Some(ref type_name) = callee_struct_name {
+                                self.find_cross_module_fn_mangled(type_name, "init")
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(ref alt_name) = alt_name {
+                            if let Some(f) = self.module.get_function(alt_name) {
+                                f
+                            } else {
+                                self.emit_error(
+                                    TrussDiagnosticCode::UndefinedFunction,
+                                    format!("Undefined function: '{}'", function_name),
+                                    None,
+                                );
+                                anyhow::bail!("Undefined function: {}", function_name);
+                            }
+                        } else {
+                            self.emit_error(
+                                TrussDiagnosticCode::UndefinedFunction,
+                                format!("Undefined function: '{}'", function_name),
+                                None,
+                            );
+                            anyhow::bail!("Undefined function: {}", function_name);
+                        }
+                    }
+                };
+
+                let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+
                 let instantiation_ptr: Option<(BasicTypeEnum<'ctx>, PointerValue<'ctx>)> =
                     if is_init_call {
                         if let Some(ref struct_name) = callee_struct_name {
@@ -13451,9 +13599,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                 };
                                 let malloc_fn =
                                     self.module.get_function("malloc").unwrap_or_else(|| {
-                                        let fn_ty = self
-                                            .context
-                                            .i64_type()
+                                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                        let fn_ty = ptr_ty
                                             .fn_type(&[self.context.i64_type().into()], false);
                                         self.module.add_function("malloc", fn_ty, None)
                                     });
