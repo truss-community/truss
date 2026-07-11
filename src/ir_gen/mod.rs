@@ -1045,6 +1045,49 @@ impl<'ctx> IRGenerator<'ctx> {
         Ok(result)
     }
 
+    /// Coerce two IntValue operands to the same LLVM integer type by
+    /// sign-extending the narrower one. Returns (l, r) with matching widths.
+    fn match_int_widths(
+        &self,
+        l: inkwell::values::IntValue<'ctx>,
+        r: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(inkwell::values::IntValue<'ctx>, inkwell::values::IntValue<'ctx>)> {
+        if l.get_type() == r.get_type() {
+            return Ok((l, r));
+        }
+        let l_bits = l.get_type().get_bit_width();
+        let r_bits = r.get_type().get_bit_width();
+        if l_bits > r_bits {
+            let r_ext = self.builder.build_int_s_extend(r, l.get_type(), "")?;
+            Ok((l, r_ext))
+        } else {
+            let l_ext = self.builder.build_int_s_extend(l, r.get_type(), "")?;
+            Ok((l_ext, r))
+        }
+    }
+
+    /// Wrap an argument value in Optional.some() if the expected parameter
+    /// type is Optional but the argument is not.
+    fn maybe_wrap_optional_arg(
+        &self,
+        function: inkwell::values::FunctionValue<'ctx>,
+        param_idx: u32,
+        arg_val: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>> {
+        let param_types = function.get_type().get_param_types();
+        if let Some(&expected_ty) = param_types.get(param_idx as usize) {
+            if let Ok(st) = TryInto::<inkwell::types::StructType<'ctx>>::try_into(expected_ty) {
+                let name = st.get_name().and_then(|n| n.to_str().ok()).unwrap_or("");
+                if name.contains("Optional")
+                    && !arg_val.get_type().is_struct_type()
+                {
+                    return self.build_optional_some_value(arg_val, st);
+                }
+            }
+        }
+        Ok(arg_val)
+    }
+
     fn maybe_wrap_for_optional_return(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -4288,6 +4331,68 @@ impl<'ctx> IRGenerator<'ctx> {
         Ok(())
     }
 
+    /// Generate body for a struct stored property accessor (getter or setter).
+    fn generate_struct_stored_accessor(
+        &self,
+        fn_prefix: &str,
+        field_name: &str,
+        is_getter: bool,
+        llvm_var_type: BasicTypeEnum<'ctx>,
+        struct_name: &str,
+    ) -> Result<()> {
+        let fn_name = if is_getter {
+            self.mangle_fn_name(&format!("{}.getter", fn_prefix), &[])
+        } else {
+            self.mangle_fn_name(&format!("{}.setter", fn_prefix), &[])
+        };
+        let function = self.module.get_function(&fn_name);
+        let Some(function) = function else { return Ok(()) };
+        if function.get_first_basic_block().is_some() {
+            return Ok(());
+        }
+        let struct_type = *self.struct_types.borrow().get(struct_name).ok_or_else(|| {
+            anyhow::anyhow!("Struct type '{}' not found", struct_name)
+        })?;
+        // Find field index from struct decl body, matching LLVM struct layout
+        let field_index = {
+            let scope = self.program_scope.borrow();
+            let symbol = scope.as_ref()
+                .and_then(|s| s.borrow().get_symbol_qualified(struct_name)
+                    .or_else(|| s.borrow().get_symbol_deep(struct_name)));
+            let mut idx = 0usize;
+            if let Some(sym) = symbol {
+                if let Some(decl) = sym.borrow().get_decl().ok().flatten() {
+                    if let Statement::StructDecl { body, .. } = &*decl.borrow() {
+                        for stmt in body {
+                            if self.is_stored_field(stmt) {
+                                if let Statement::VariableDecl { name, .. } = &*stmt.borrow() {
+                                    if name.value == field_name {
+                                        break;
+                                    }
+                                }
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            idx
+        };
+        let entry = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(entry);
+        let self_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
+        let field_ptr = self.builder.build_struct_gep(struct_type, self_ptr, field_index as u32, "")?;
+        if is_getter {
+            let val = self.builder.build_load(llvm_var_type, field_ptr, "")?;
+            self.builder.build_return(Some(&val))?;
+        } else {
+            let new_val = function.get_nth_param(1).unwrap();
+            self.builder.build_store(field_ptr, new_val)?;
+            self.builder.build_return(None)?;
+        }
+        Ok(())
+    }
+
     fn generate_auto_accessor(
         &self,
         fn_prefix: &str,
@@ -4404,6 +4509,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                     (left_val, right_val)
                 {
+                    let (l, r) = self.match_int_widths(l, r)?;
                     Ok(self.builder.build_int_add(l, r, "")?.into())
                 } else if let (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) =
                     (left_val, right_val)
@@ -4417,6 +4523,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                     (left_val, right_val)
                 {
+                    let (l, r) = self.match_int_widths(l, r)?;
                     Ok(self.builder.build_int_sub(l, r, "")?.into())
                 } else if let (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) =
                     (left_val, right_val)
@@ -4430,6 +4537,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                     (left_val, right_val)
                 {
+                    let (l, r) = self.match_int_widths(l, r)?;
                     Ok(self.builder.build_int_mul(l, r, "")?.into())
                 } else if let (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) =
                     (left_val, right_val)
@@ -4443,6 +4551,7 @@ impl<'ctx> IRGenerator<'ctx> {
                 if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                     (left_val, right_val)
                 {
+                    let (l, r) = self.match_int_widths(l, r)?;
                     Ok(self.builder.build_int_signed_div(l, r, "")?.into())
                 } else if let (BasicValueEnum::FloatValue(l), BasicValueEnum::FloatValue(r)) =
                     (left_val, right_val)
@@ -4715,7 +4824,9 @@ impl<'ctx> IRGenerator<'ctx> {
                             .borrow()
                             .get(&format!("{}.init", type_name))
                             .cloned()
-                            .unwrap_or_else(|| format!("{}.init", type_name));
+                            .unwrap_or_else(|| {
+                                self.mangle_fn_name(&format!("{}.init", type_name), &[])
+                            });
                         if let Some(function) = self.module.get_function(&fn_name) {
                             let is_inline = ty
                                 .as_ref()
@@ -4860,7 +4971,39 @@ impl<'ctx> IRGenerator<'ctx> {
                                 )?;
                             }
                         }
-                    } else if !accessors.is_empty() {
+                    } else {
+                        // Struct stored property: generate getter/setter body
+                        let is_builtintype = !self.struct_types.borrow().contains_key(sname);
+                        if !is_builtintype {
+                            let getter_name =
+                                self.mangle_fn_name(&format!("{}.getter", fn_prefix), &[]);
+                            if self.module.get_function(&getter_name).is_some() {
+                                self.generate_struct_stored_accessor(
+                                    &fn_prefix,
+                                    &name.value,
+                                    true,
+                                    llvm_var_type,
+                                    sname,
+                                )?;
+                                let is_var = matches!(
+                                    &token.ty,
+                                    TokenType::Keyword {
+                                        keyword: KeywordType::Var
+                                    }
+                                );
+                                if is_var {
+                                    self.generate_struct_stored_accessor(
+                                        &fn_prefix,
+                                        &name.value,
+                                        false,
+                                        llvm_var_type,
+                                        sname,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    if !accessors.is_empty() {
                         for accessor in accessors {
                             self.generate_accessor_function(
                                 &fn_prefix,
@@ -5730,7 +5873,9 @@ impl<'ctx> IRGenerator<'ctx> {
                         .borrow()
                         .get(&format!("{}.init", struct_name))
                         .cloned()
-                        .unwrap_or_else(|| format!("{}.init", struct_name));
+                        .unwrap_or_else(|| {
+                            self.mangle_fn_name(&format!("{}.init", struct_name), &[])
+                        });
                     let function = self.module.get_function(&fn_name).unwrap();
 
                     let current_block = self.builder.get_insert_block();
@@ -7155,10 +7300,16 @@ impl<'ctx> IRGenerator<'ctx> {
                     self.builder
                         .build_store(rc_ptr, i64_ty.const_int(1, false))?;
 
-                    let init_fn = self.module.get_function("String.init").unwrap_or_else(|| {
+                    let init_fn_name = self
+                        .mangled_fn_names
+                        .borrow()
+                        .get("String.init")
+                        .cloned()
+                        .unwrap_or_else(|| self.mangle_fn_name("String.init", &[]));
+                    let init_fn = self.module.get_function(&init_fn_name).unwrap_or_else(|| {
                         let fn_ty =
                             i8_ty.fn_type(&[i8_ty.into(), i8_ty.into(), i64_ty.into()], false);
-                        self.module.add_function("String.init", fn_ty, None)
+                        self.module.add_function(&init_fn_name, fn_ty, None)
                     });
 
                     let raw_src_i8 = self.builder.build_pointer_cast(raw_src, i8_ty, "")?;
@@ -7697,6 +7848,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             Ok(Some(self.builder.build_int_add(l, r, "")?.into()))
                         } else if let (
                             BasicValueEnum::FloatValue(l),
@@ -7740,6 +7892,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             Ok(Some(self.builder.build_int_sub(l, r, "")?.into()))
                         } else if let (
                             BasicValueEnum::FloatValue(l),
@@ -7784,6 +7937,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             Ok(Some(self.builder.build_int_mul(l, r, "")?.into()))
                         } else if let (
                             BasicValueEnum::FloatValue(l),
@@ -7799,6 +7953,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             if is_unsigned {
                                 Ok(Some(self.builder.build_int_unsigned_div(l, r, "")?.into()))
                             } else {
@@ -7818,6 +7973,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             Ok(Some(
                                 self.builder
                                     .build_int_compare(inkwell::IntPredicate::EQ, l, r, "")?
@@ -7947,6 +8103,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             Ok(Some(
                                 self.builder
                                     .build_int_compare(inkwell::IntPredicate::NE, l, r, "")?
@@ -8076,6 +8233,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let predicate = if is_unsigned {
                                 inkwell::IntPredicate::ULT
                             } else {
@@ -8113,6 +8271,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let predicate = if is_unsigned {
                                 inkwell::IntPredicate::ULE
                             } else {
@@ -8150,6 +8309,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let predicate = if is_unsigned {
                                 inkwell::IntPredicate::UGT
                             } else {
@@ -8187,6 +8347,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (left_val, right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let predicate = if is_unsigned {
                                 inkwell::IntPredicate::UGE
                             } else {
@@ -9555,6 +9716,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (current_val.unwrap(), right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let result = self.builder.build_int_add(l, r, "")?;
                             self.builder.build_store(var_ptr, result)?;
                             result.into()
@@ -9574,6 +9736,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (current_val.unwrap(), right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let result = self.builder.build_int_sub(l, r, "")?;
                             self.builder.build_store(var_ptr, result)?;
                             result.into()
@@ -9593,6 +9756,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (current_val.unwrap(), right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let result = self.builder.build_int_mul(l, r, "")?;
                             self.builder.build_store(var_ptr, result)?;
                             result.into()
@@ -9612,6 +9776,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         if let (BasicValueEnum::IntValue(l), BasicValueEnum::IntValue(r)) =
                             (current_val.unwrap(), right_val)
                         {
+                            let (l, r) = self.match_int_widths(l, r)?;
                             let result = self.builder.build_int_signed_div(l, r, "")?;
                             self.builder.build_store(var_ptr, result)?;
                             result.into()
@@ -13364,6 +13529,20 @@ impl<'ctx> IRGenerator<'ctx> {
                     } else {
                         method_self_ptr.is_some() as usize
                     } + args.len();
+                    // Optional auto-boxing: wrap non-struct arg in Optional.some()
+                    if arg_idx < fn_param_types.len()
+                        && fn_param_types[arg_idx] != arg_val.get_type().into()
+                        && fn_param_types[arg_idx].is_struct_type()
+                        && !arg_val.get_type().is_struct_type()
+                    {
+                        let st = fn_param_types[arg_idx].into_struct_type();
+                        let sn = st.get_name().and_then(|n| n.to_str().ok()).unwrap_or("");
+                        if sn.contains("Optional") {
+                            let wrapped = self.build_optional_some_value(arg_val, st)?;
+                            args.push(wrapped.into());
+                            continue;
+                        }
+                    }
                     if arg_idx < fn_param_types.len()
                         && fn_param_types[arg_idx] != arg_val.get_type().into()
                         && fn_param_types[arg_idx].is_pointer_type()
@@ -13486,19 +13665,19 @@ impl<'ctx> IRGenerator<'ctx> {
 
                 let call_result = self.builder.build_call(function, &args, "")?;
 
-                if let Some((_, ptr)) = instantiation_ptr {
+                if let Some((struct_ty, ptr)) = &instantiation_ptr {
                     if self
                         .class_types
                         .borrow()
                         .contains_key(callee_struct_name.as_deref().unwrap_or(""))
                     {
-                        let val: BasicValueEnum<'ctx> = ptr.into();
+                        let val: BasicValueEnum<'ctx> = (*ptr).into();
                         Ok(Some(val))
                     } else {
                         let fn_ret_type = function.get_type().get_return_type();
                         let is_void_return = fn_ret_type.is_none();
                         if is_void_return {
-                            let val = self.builder.build_load(ptr.get_type(), ptr, "")?;
+                            let val = self.builder.build_load(*struct_ty, *ptr, "")?;
                             Ok(Some(val))
                         } else {
                             let call_val = match call_result.try_as_basic_value() {
