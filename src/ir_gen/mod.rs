@@ -13566,6 +13566,10 @@ impl<'ctx> IRGenerator<'ctx> {
                     Expression::Variable { name, .. } => Some(name.value.clone()),
                     Expression::MemberAccess { member, .. } => Some(member.value.clone()),
                     Expression::Type { name, .. } => Some(name.value.clone()),
+                    Expression::SelfType { ty, .. } => ty.as_ref().map(|t| match &*t.borrow() {
+                        Type::Struct(name, ..) | Type::Class(name, ..) => name.clone(),
+                        _ => String::new(),
+                    }).filter(|n| !n.is_empty()),
                     _ => None,
                 };
 
