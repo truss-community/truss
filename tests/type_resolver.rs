@@ -8530,3 +8530,101 @@ fn test_nested_module_qualified_type() {
         errors
     );
 }
+
+#[test]
+fn test_generic_struct_init_infer_from_integer_literal() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "struct S<T> { var v: T }
+             func test() {
+                 let s = S(v: 1)
+             }"
+                .to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut symbol_resolver =
+        SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = symbol_resolver.resolve(&program, "test".to_string());
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "Generic struct init with integer literal should infer T=Int32, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_generic_struct_init_infer_from_custom_type() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "struct Wrapper<T> { var value: T }
+             struct Custom { var x: Int32 }
+             func test() {
+                 let c = Custom(x: 42)
+                 let w = Wrapper(value: c)
+             }"
+                .to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut symbol_resolver =
+        SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = symbol_resolver.resolve(&program, "test".to_string());
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "Generic struct init with custom type should infer T=Custom, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_generic_struct_init_with_explicit_type_parameters() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "struct S<T> { var v: T }
+             func test() {
+                 let s = S<Int32>(v: 1)
+             }"
+                .to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut symbol_resolver =
+        SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = symbol_resolver.resolve(&program, "test".to_string());
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "Generic struct init with explicit type parameters should work, got: {:?}",
+        errors
+    );
+}

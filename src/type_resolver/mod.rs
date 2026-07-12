@@ -3626,9 +3626,111 @@ impl TypeResolver {
                                     &callee.borrow().token(),
                                 );
                             }
+                            let generic_mapping = {
+                                let has_generic_param = param_tys
+                                    .iter()
+                                    .any(|pt| Self::type_has_any_generic_param(&pt.borrow()));
+                                if !has_generic_param {
+                                    None
+                                } else {
+                                    let mut mapping: std::collections::HashMap<
+                                        String,
+                                        Rc<RefCell<Type>>,
+                                    > = std::collections::HashMap::new();
+                                    if let Some(tps) = &type_parameters {
+                                        if let Some(symbol) = weak_sym
+                                            .0
+                                            .upgrade()
+                                            .or_else(|| {
+                                                self.current_scope.as_ref().and_then(|scope| {
+                                                    scope.borrow().get_symbol_qualified(
+                                                        struct_name,
+                                                    )
+                                                })
+                                            })
+                                        {
+                                            let gp_names: Vec<String> = {
+                                                let sym_borrow = symbol.borrow();
+                                                sym_borrow
+                                                    .get_decl()
+                                                    .ok()
+                                                    .flatten()
+                                                    .and_then(|decl| {
+                                                        let decl_borrow = decl.borrow();
+                                                        match &*decl_borrow {
+                                                            Statement::StructDecl {
+                                                                generic_parameters,
+                                                                ..
+                                                            }
+                                                            | Statement::ClassDecl {
+                                                                generic_parameters,
+                                                                ..
+                                                            } => Some(
+                                                                generic_parameters
+                                                                    .iter()
+                                                                    .map(|gp| {
+                                                                        gp.name.value.clone()
+                                                                    })
+                                                                    .collect(),
+                                                            ),
+                                                            _ => None,
+                                                        }
+                                                    })
+                                                    .unwrap_or_default()
+                                            };
+                                            for (i, tp_expr) in tps.iter().enumerate() {
+                                                if i >= gp_names.len() {
+                                                    break;
+                                                }
+                                                if let Some(tp_ty) =
+                                                    self.infer_type(tp_expr.clone())
+                                                {
+                                                    mapping.insert(gp_names[i].clone(), tp_ty);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    for (i, param) in parameters.iter().enumerate() {
+                                        if i >= param_tys.len() {
+                                            break;
+                                        }
+                                        let param_ty = &param_tys[i];
+                                        let prev_closure_expected =
+                                            self.closure_expected_type.clone();
+                                        if !Self::type_contains_generic(param_ty) {
+                                            self.closure_expected_type = Some(param_ty.clone());
+                                        }
+                                        let arg_ty =
+                                            self.infer_type(param.expression.clone());
+                                        self.closure_expected_type = prev_closure_expected;
+                                        if let Some(arg_ty) = arg_ty {
+                                            Self::collect_generic_mappings(
+                                                param_ty.clone(),
+                                                arg_ty,
+                                                &mut mapping,
+                                            );
+                                        }
+                                    }
+                                    if mapping.is_empty() {
+                                        None
+                                    } else {
+                                        Some(mapping)
+                                    }
+                                }
+                            };
+
                             for (i, param) in parameters.iter().enumerate() {
                                 if i < param_tys.len() {
-                                    let expected_ty = param_tys[i].clone();
+                                    let expected_ty = if let Some(ref mapping) =
+                                        generic_mapping
+                                    {
+                                        Self::substitute_generic_params(
+                                            param_tys[i].clone(),
+                                            mapping,
+                                        )
+                                    } else {
+                                        param_tys[i].clone()
+                                    };
                                     self.infer_expression_type(
                                         param.expression.clone(),
                                         expected_ty,
