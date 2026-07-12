@@ -17,8 +17,6 @@ use crate::{
     trusspm::resolver::DependencyResolver,
 };
 
-/// Find the path to the standard library from the active toolchain.
-/// Returns `Some(path)` if the toolchain version is set and its stdlib directory exists.
 pub fn find_stdlib_path() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let trussup_dir = std::path::Path::new(&home).join(".trussup");
@@ -40,8 +38,6 @@ pub fn find_stdlib_path() -> Option<String> {
     None
 }
 
-/// Parse standard library files from the given directory path.
-/// Returns parsed statements and source contents.
 pub fn parse_std_lib(
     stdlib_path: &str,
     engine: Rc<RefCell<TrussDiagnosticEngine>>,
@@ -49,7 +45,6 @@ pub fn parse_std_lib(
     let dir = Path::new(stdlib_path);
     let project_file = dir.join("Project.truss");
 
-    // Check for project structure (Project.truss + Sources/<name>/)
     if project_file.exists() {
         if let Ok(manifest) = Manifest::from_project_dir(stdlib_path, engine.clone()) {
             let source_files = DependencyResolver::discover_source_files(&manifest.name, dir);
@@ -97,7 +92,6 @@ pub fn parse_std_lib(
         }
     }
 
-    // Legacy flat directory fallback (read all .truss files directly)
     let mut entries: Vec<_> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())

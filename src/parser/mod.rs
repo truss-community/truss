@@ -425,7 +425,6 @@ impl Parser {
         }
     }
 
-    /// After parsing a trailing closure, check if the chain continues with .member calls
     fn parse_trailing_chain(&mut self, expr: Expression) -> Result<Expression, ()> {
         let mut current = expr;
         loop {
@@ -457,7 +456,6 @@ impl Parser {
                     member: Box::new(member_token),
                     ty: None,
                 };
-                // The new member access might also have a trailing closure
                 current = self.apply_trailing_closure(current)?;
             } else {
                 break;
@@ -6516,10 +6514,8 @@ impl Parser {
                 .peek2()
                 .map_or(false, |t2| KeywordType::is_keyword(&t2, KeywordType::Let))
         {
-            // Handle `if (let x = ...) && ...` - parenthesized if-let condition
-            self.index += 1; // consume `(`
+            self.index += 1;
             let cond = self.parse_if_let_condition()?;
-            // Expect closing paren
             if let Some(close) = self.peek()
                 && !SeparatorType::is_separator(&close, SeparatorType::CloseParen)
             {
@@ -6530,19 +6526,18 @@ impl Parser {
                 );
                 return Err(());
             }
-            self.index += 1; // consume `)`
-            // Handle `&&` continuation after the parenthesized if-let
+            self.index += 1;
             if let Some(t) = self.peek()
                 && OperatorType::is_operator(&t, OperatorType::And)
             {
-                self.index += 1; // consume `&&`
+                self.index += 1;
                 let right = if let Some(next) = self.peek()
                     && SeparatorType::is_separator(&next, SeparatorType::OpenParen)
                     && self
                         .peek2()
                         .map_or(false, |t2| KeywordType::is_keyword(&t2, KeywordType::Let))
                 {
-                    self.index += 1; // consume `(`
+                    self.index += 1;
                     let inner = self.parse_if_let_condition()?;
                     if let Some(close) = self.peek()
                         && !SeparatorType::is_separator(&close, SeparatorType::CloseParen)
@@ -6554,7 +6549,7 @@ impl Parser {
                         );
                         return Err(());
                     }
-                    self.index += 1; // consume `)`
+                    self.index += 1;
                     inner
                 } else {
                     self.parse_expression()?

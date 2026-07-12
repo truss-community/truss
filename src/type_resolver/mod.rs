@@ -47,8 +47,6 @@ pub struct TypeResolver {
     is_mutating: Vec<bool>,
     yield_context_depth: usize,
     superclass_map: HashMap<String, Rc<RefCell<Type>>>,
-    // Raw generic parameter constraints (expressions), populated during process_decl
-    // and resolved into types between process_decl and resolve_statement phases.
     generic_param_constraint_exprs: HashMap<String, Vec<Rc<RefCell<Expression>>>>,
     generic_param_constraints: HashMap<String, Vec<Rc<RefCell<Type>>>>,
 }
@@ -90,7 +88,6 @@ impl TypeResolver {
             self.process_decl(stmt.clone());
         }
 
-        // Resolve generic parameter constraints after all symbol table entries exist
         self.resolve_generic_constraints();
 
         for stmt in &program.statements {
@@ -1891,13 +1888,11 @@ impl TypeResolver {
                 let prev_owner = self.current_owner.replace(symbol.clone());
                 if let Some(s) = scope.as_ref() {
                     self.enter_scope(s.clone());
-                    // Register generic params in scope and pre-resolve their constraint types
                     for gp in generic_parameters {
                         if let GenericParameterKind::Type { constraints } = &gp.kind {
                             if !constraints.is_empty() {
                                 self.generic_param_constraint_exprs
                                     .insert(gp.name.value.clone(), constraints.clone());
-                                // Pre-resolve constraint types now that generic params are in scope
                                 let resolved: Vec<Rc<RefCell<Type>>> = constraints
                                     .iter()
                                     .filter_map(|c| self.infer_type(c.clone()))
@@ -1907,7 +1902,6 @@ impl TypeResolver {
                                         .insert(gp.name.value.clone(), resolved);
                                 }
                             }
-                            // Register GenericParam type in scope
                             let gp_type =
                                 Rc::new(RefCell::new(Type::GenericParam(gp.name.value.clone())));
                             s.borrow_mut().set_type(gp.name.value.clone(), gp_type);

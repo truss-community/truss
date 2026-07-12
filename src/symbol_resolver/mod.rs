@@ -1328,7 +1328,6 @@ impl SymbolResolver {
                                 self.enter(module_symbol, &self_token);
                                 continue;
                             }
-                            // Dotted name: Foo.bar → split into module "Foo" and member "bar"
                             if let Some(dot_pos) = member.name.rfind('.') {
                                 let sub_module_path = &member.name[..dot_pos];
                                 let sub_member_name = &member.name[dot_pos + 1..];
@@ -1385,7 +1384,6 @@ impl SymbolResolver {
                                 }
                                 continue;
                             }
-                            // Nested members: Foo.{self, bar} → find sub-module then recurse
                             if let Some(ref sub_members) = member.members {
                                 let sub_module =
                                     module.borrow().children.get(&member.name).cloned().or_else(
@@ -1608,7 +1606,6 @@ impl SymbolResolver {
                                 }
                                 continue;
                             }
-                            // Plain name lookup
                             let found_symbol = module
                                 .borrow()
                                 .scope
@@ -2933,7 +2930,6 @@ impl SymbolResolver {
                     return;
                 }
 
-                // Detect implicit closure captures
                 if !self.closure_capture_stack.is_empty() {
                     let (closure_scope, _) = &self.closure_capture_stack.last().unwrap().clone();
                     let var_name = name.value.clone();
@@ -3313,7 +3309,6 @@ impl SymbolResolver {
                 *scope = Some(self.enter_scope(None));
                 let closure_scope = scope.as_ref().unwrap().clone();
 
-                // Register explicit captures
                 let mut explicit_capture_names = Vec::new();
                 for cap in captures.iter() {
                     let cap_name = cap.name.value.clone();
@@ -3333,7 +3328,6 @@ impl SymbolResolver {
                     }
                 }
 
-                // Push closure capture context
                 let collected_captures: Vec<ClosureCapture> = captures.clone();
                 self.closure_capture_stack
                     .push((closure_scope.clone(), collected_captures));
@@ -3392,7 +3386,6 @@ impl SymbolResolver {
                     }
                 }
 
-                // Pop closure capture context and backfill captures
                 if let Some((_, final_captures)) = self.closure_capture_stack.pop() {
                     *captures = final_captures;
                 }

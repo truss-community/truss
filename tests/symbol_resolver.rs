@@ -5193,8 +5193,6 @@ fn test_final_property_in_final_class_symbol() {
     );
 }
 
-// --- Exception handling symbol resolver tests ---
-
 #[test]
 fn test_throw_resolves_expression() {
     let engine = create_engine();
@@ -5549,7 +5547,6 @@ fn test_weak_variable_ownership_in_symbol() {
     resolver.resolve(&program, "main".to_string());
     assert!(!engine.borrow().has_errors());
 
-    // Find the variable x: find FunctionDecl in program statements
     let func_stmt = program.statements.iter().find(|s| {
         matches!(&*s.borrow(), Statement::FunctionDecl { name, .. } if name.value == "test")
     }).cloned().expect("Expected func test");

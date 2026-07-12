@@ -742,7 +742,6 @@ impl LanguageServer {
                     }
                 }
 
-                // Resolve dependency packages using DependencyResolver
                 let dep_packages = DependencyResolver::resolve(
                     &manifest,
                     Path::new(&proj_dir),
@@ -758,7 +757,6 @@ impl LanguageServer {
                     packages.insert(dep_name.clone(), dep_pkg.clone());
                 }
 
-                // Parse and resolve dependency source files so their symbols are available
                 for dep in &manifest.dependencies {
                     if dep.name == "Truss" || dep.name == *pkg_name {
                         continue;
@@ -839,7 +837,6 @@ impl LanguageServer {
                             dep_engine.clone(),
                         );
                         dep_resolver.resolve(&dep_prog, dep.name.clone());
-                        // Also type resolve the dependency for full type info
                         let dep_ty_engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
                         let mut dep_type_resolver = TypeResolver::new(
                             packages.clone(),
@@ -1192,30 +1189,28 @@ impl LanguageServer {
     }
 
     fn symbol_type_string(&self, sym: &Symbol) -> Option<String> {
-        // Handle enum case constructors directly from Symbol data
         if let Symbol::EnumCase {
             name,
             parent,
             parameter_types,
             ..
         } = sym
+            && !parameter_types.is_empty()
         {
-            if !parameter_types.is_empty() {
-                let enum_name = parent.0.upgrade().and_then(|p| p.borrow().name().ok());
-                let mut sig = name.to_string();
-                sig.push('(');
-                for (i, pt) in parameter_types.iter().enumerate() {
-                    if i > 0 {
-                        sig.push_str(", ");
-                    }
-                    sig.push_str(&pt.borrow().to_string());
+            let enum_name = parent.0.upgrade().and_then(|p| p.borrow().name().ok());
+            let mut sig = name.to_string();
+            sig.push('(');
+            for (i, pt) in parameter_types.iter().enumerate() {
+                if i > 0 {
+                    sig.push_str(", ");
                 }
-                sig.push(')');
-                if let Some(ref en) = enum_name {
-                    sig.push_str(&format!(" -> {}", en));
-                }
-                return Some(sig);
+                sig.push_str(&pt.borrow().to_string());
             }
+            sig.push(')');
+            if let Some(ref en) = enum_name {
+                sig.push_str(&format!(" -> {}", en));
+            }
+            return Some(sig);
         }
 
         if let Ok(Some(decl)) = sym.get_decl() {
@@ -1445,17 +1440,15 @@ impl LanguageServer {
                         let scope = mod_ref.borrow().scope.clone();
                         let child = mod_ref.borrow().children.get(seg).cloned();
                         let decl_clone = decl.clone();
-                        scope
-                            .and_then(|s| s.borrow().get_symbol(seg))
-                            .or_else(|| {
-                                child.map(|child_mod| {
-                                    Rc::new(RefCell::new(Symbol::Module {
-                                        name: seg.to_string(),
-                                        decl: decl_clone,
-                                        module: Some(child_mod),
-                                    }))
-                                })
+                        scope.and_then(|s| s.borrow().get_symbol(seg)).or_else(|| {
+                            child.map(|child_mod| {
+                                Rc::new(RefCell::new(Symbol::Module {
+                                    name: seg.to_string(),
+                                    decl: decl_clone,
+                                    module: Some(child_mod),
+                                }))
                             })
+                        })
                     }
                     _ => None,
                 }
@@ -1687,7 +1680,6 @@ impl LanguageServer {
             self.add_scope_completions(&mut items, &content, uri);
         }
 
-        // Prefix filtering: keep only items whose label starts with prefix
         let prefix = {
             let line_str = lines.get(line).unwrap_or(&"");
             let end = character.min(line_str.len());
@@ -2144,7 +2136,6 @@ impl LanguageServer {
             }
         };
 
-        // Check for member access (e.g., obj.method)
         let lines: Vec<&str> = content.lines().collect();
         if line < lines.len() {
             let current_line = lines[line];

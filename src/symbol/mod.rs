@@ -153,9 +153,6 @@ pub enum Symbol {
 }
 
 impl PartialEq for Symbol {
-    /// NOTE: `package` field is intentionally excluded from equality comparison
-    /// so that two type symbols with the same name from different packages
-    /// are considered equal. Access control uses the `package` field separately.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Function { name: a, decl: ad }, Self::Function { name: b, decl: bd }) => {

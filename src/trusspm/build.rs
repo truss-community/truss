@@ -68,7 +68,6 @@ impl BuildOrchestrator {
             let std_dir = std::path::Path::new(&std_path);
             let project_file = std_dir.join("Project.truss");
 
-            // Discover std source files (project structure or flat)
             let mut std_files: Vec<std::path::PathBuf> = Vec::new();
             if project_file.exists() {
                 let std_engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
@@ -118,7 +117,6 @@ impl BuildOrchestrator {
                         }
                         self.engine.borrow_mut().extend(file_engine.take());
                         let mut stmts = program.statements;
-                        // Flatten conditional blocks (e.g. #if os(linux))
                         let triple = TargetTriple::host();
                         let mut symbols = predefined_symbols(&path_str);
                         flatten_program(&mut stmts, &triple, &mut symbols);
@@ -623,8 +621,6 @@ impl BuildOrchestrator {
                     parsed
                 };
 
-                // First file: also include dependency file statements so their function
-                // bodies are compiled into the same LLVM module.
                 if file_modules.is_empty() {
                     for dep in &self.manifest.dependencies {
                         let dep_src_dir =
