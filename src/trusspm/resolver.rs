@@ -102,20 +102,30 @@ impl DependencyResolver {
         project_dir: &Path,
     ) -> Vec<std::path::PathBuf> {
         let src_dir = project_dir.join("Sources").join(package_name);
-        if !src_dir.exists() {
+        Self::collect_truss_files_recursive(&src_dir)
+    }
+
+    pub fn collect_truss_files_recursive(dir: &Path) -> Vec<std::path::PathBuf> {
+        if !dir.exists() {
             return Vec::new();
         }
         let mut files = Vec::new();
-        if let Ok(entries) = fs::read_dir(&src_dir) {
+        Self::collect_truss_files_inner(dir, &mut files);
+        files.sort();
+        files
+    }
+
+    fn collect_truss_files_inner(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "truss") {
+                if path.is_dir() {
+                    Self::collect_truss_files_inner(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "truss") {
                     files.push(path);
                 }
             }
         }
-        files.sort();
-        files
     }
 
     pub fn dependency_source_dir(

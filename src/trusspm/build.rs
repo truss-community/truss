@@ -76,15 +76,7 @@ impl BuildOrchestrator {
                 }
             }
             if std_files.is_empty() {
-                let mut entries: Vec<_> = match std_dir.read_dir() {
-                    Ok(entries) => entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
-                entries.sort_by_key(|e| e.file_name());
-                std_files = entries.into_iter().map(|e| e.path()).collect();
+                std_files = DependencyResolver::collect_truss_files_recursive(&std_dir);
             }
 
             if !std_files.is_empty() {
@@ -223,15 +215,7 @@ impl BuildOrchestrator {
                     continue;
                 }
                 let mut file_stmts: Vec<Rc<RefCell<Statement>>> = Vec::new();
-                let mut entries: Vec<_> = match std::fs::read_dir(&src_dir) {
-                    Ok(entries) => entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
-                entries.sort_by_key(|e| e.file_name());
-                let files: Vec<_> = entries.into_iter().map(|e| e.path()).collect();
+                let files = DependencyResolver::collect_truss_files_recursive(&src_dir);
                 for file in &files {
                     let path_str = file.to_string_lossy().to_string();
                     if let Ok(meta) = std::fs::metadata(file) {
@@ -337,15 +321,7 @@ impl BuildOrchestrator {
                 {
                     let dep_src_dir = DependencyResolver::dependency_source_dir(dep, project_path);
                     if dep_src_dir.exists() {
-                        let mut entries: Vec<_> = match std::fs::read_dir(&dep_src_dir) {
-                            Ok(entries) => entries
-                                .filter_map(|e| e.ok())
-                                .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
-                                .collect(),
-                            Err(_) => Vec::new(),
-                        };
-                        entries.sort_by_key(|e| e.file_name());
-                        dep_files = entries.into_iter().map(|e| e.path()).collect();
+                        dep_files = DependencyResolver::collect_truss_files_recursive(&dep_src_dir);
                     }
                 }
                 dep_files
@@ -628,15 +604,8 @@ impl BuildOrchestrator {
                         if !dep_src_dir.exists() {
                             continue;
                         }
-                        let mut dep_entries: Vec<_> = match std::fs::read_dir(&dep_src_dir) {
-                            Ok(entries) => entries
-                                .filter_map(|e| e.ok())
-                                .filter(|e| e.path().extension().is_some_and(|ext| ext == "truss"))
-                                .collect(),
-                            Err(_) => Vec::new(),
-                        };
-                        dep_entries.sort_by_key(|e| e.file_name());
-                        for dep_file in dep_entries.into_iter().map(|e| e.path()) {
+                        let dep_entries = DependencyResolver::collect_truss_files_recursive(&dep_src_dir);
+                        for dep_file in &dep_entries {
                             let dep_path = dep_file.to_string_lossy().to_string();
                             if let Some(cached) = self.file_cache.get(&dep_path) {
                                 program.statements.extend(cached.statements.iter().cloned());
