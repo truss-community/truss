@@ -4878,12 +4878,16 @@ impl<'ctx> IRGenerator<'ctx> {
                         && let Expression::Call {
                             callee, parameters, ..
                         } = &*init.borrow()
-                        && let Expression::Variable {
-                            name: callee_name, ..
-                        } = &*callee.borrow()
-                        && self.module.get_function(&callee_name.value).is_none()
                     {
-                        let type_name = &callee_name.value;
+                        let callee_name = match &*callee.borrow() {
+                            Expression::Variable { name, .. } => Some(name.value.clone()),
+                            Expression::MemberAccess { member, .. } => Some(member.value.clone()),
+                            _ => None,
+                        };
+                        if let Some(ref callee_name) = callee_name
+                            && self.module.get_function(callee_name).is_none()
+                        {
+                        let type_name = callee_name;
                         let fn_name = self
                             .mangled_fn_names
                             .borrow()
@@ -4892,10 +4896,41 @@ impl<'ctx> IRGenerator<'ctx> {
                             .unwrap_or_else(|| {
                                 self.mangle_fn_name(&format!("{}.init", type_name), &[])
                             });
+                        let fn_name = if self.module.get_function(&fn_name).is_none() {
+                            self.find_cross_module_fn_mangled(type_name, "init")
+                                .unwrap_or(fn_name)
+                        } else {
+                            fn_name
+                        };
                         if let Some(function) = self.module.get_function(&fn_name) {
                             let is_inline = ty
                                 .as_ref()
                                 .map_or(false, |t| matches!(&*t.borrow(), Type::Inline(_, _)));
+                            // Lazily resolve cross-module classes
+                            if self.class_types.borrow().get(type_name).is_none()
+                                && self.struct_types.borrow().get(type_name).is_none()
+                            {
+                                if let Some(decl) = self
+                                    .program_scope
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|scope| scope.borrow().get_symbol_deep(type_name))
+                                    .and_then(|sym| {
+                                        let sym_b = sym.borrow();
+                                        match &*sym_b {
+                                            Symbol::Class { decl, .. } => Some(decl.clone()),
+                                            Symbol::Struct { decl, .. } => Some(decl.clone()),
+                                            _ => None,
+                                        }
+                                    })
+                                {
+                                    if self.class_types.borrow().get(type_name).is_none() {
+                                        self.declare_class_types(decl.clone());
+                                        self.create_class_type_bodies(decl.clone());
+                                        self.create_vtable_instances(decl);
+                                    }
+                                }
+                            }
                             if let Some(class_type) =
                                 self.class_types.borrow().get(type_name).cloned()
                             {
@@ -4979,6 +5014,12 @@ impl<'ctx> IRGenerator<'ctx> {
                             }
                         } else if let Some(init_val) = self.resolve_expression(init.clone())? {
                             self.builder.build_store(ptr, init_val)?;
+                            if let Some(ty) = ty.as_ref()
+                                && let Type::Class(..) = &*ty.borrow()
+                            {
+                                self.class_refs.borrow_mut().push(ptr);
+                            }
+                        }
                         }
                     } else if let Some(init) = initializer
                         && let Some(init_val) = self.resolve_expression(init.clone())?
@@ -5824,6 +5865,8 @@ impl<'ctx> IRGenerator<'ctx> {
                                 }
                                 self.exit_scope();
                                 if is_void && !has_return {
+                                    self.emit_all_deinit_calls();
+                                    self.emit_class_releases();
                                     self.builder.build_return(None)?;
                                 }
                             }
@@ -5867,6 +5910,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     })();
                     if let Some(bb) = self.builder.get_insert_block() {
                         if bb.get_terminator().is_none() {
+                            self.emit_all_deinit_calls();
+                            self.emit_class_releases();
                             if is_void {
                                 let _ = self.builder.build_return(None);
                             } else {
