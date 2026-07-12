@@ -4099,7 +4099,26 @@ impl TypeResolver {
                         }
                         _ => false,
                     };
-                    if !is_int_compat && !is_generic_fill {
+                    let is_optional_wrap = match &left_ty_clone {
+                        Type::Enum(name, _, params) if name == "Optional" && params.len() == 1 => {
+                            let inner = &*params[0].borrow();
+                            if *inner == right_ty_clone {
+                                true
+                            } else {
+                                match (inner, &right_ty_clone) {
+                                    (Type::Struct(ln, _, lp), Type::Struct(rn, _, rp))
+                                    | (Type::Class(ln, _, lp), Type::Class(rn, _, rp))
+                                        if ln == rn && !lp.is_empty() && rp.is_empty() =>
+                                    {
+                                        true
+                                    }
+                                    _ => false,
+                                }
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !is_int_compat && !is_generic_fill && !is_optional_wrap {
                         let expected_msg = format!("expected {}", left_ty_clone);
                         let found_msg = format!("found {}", right_ty_clone);
                         self.emit_error_with_labels(
@@ -4369,6 +4388,21 @@ impl TypeResolver {
                     let body_ty = self
                         .get_block_type(&case.body)
                         .unwrap_or_else(|| Rc::new(RefCell::new(Type::Void)));
+
+                    let ends_with_transfer = case.body.last().is_some_and(|s| {
+                        matches!(&*s.borrow(),
+                            Statement::Break { .. }
+                            | Statement::Continue { .. }
+                            | Statement::Return { .. }
+                            | Statement::Throw { .. }
+                            | Statement::Goto { .. }
+                        )
+                    });
+
+                    if ends_with_transfer {
+                        self.leave_scope();
+                        continue;
+                    }
 
                     if *match_ty.borrow() == Type::Void {
                         match_ty = body_ty;
@@ -8037,6 +8071,13 @@ impl TypeResolver {
                     || (right_is_nullable && matches!(left_ty, Type::Void))
                     || (matches!(left_ty, Type::Void) && matches!(right_ty, Type::Void))
                     {
+                        return Some(Rc::new(RefCell::new(Type::Struct(
+                            "Bool".to_string(),
+                            WeakSymbol(std::rc::Weak::new()),
+                            vec![],
+                        ))));
+                    }
+                    if left_is_nullable && right_is_nullable && left_ty == right_ty {
                         return Some(Rc::new(RefCell::new(Type::Struct(
                             "Bool".to_string(),
                             WeakSymbol(std::rc::Weak::new()),
