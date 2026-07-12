@@ -131,6 +131,19 @@ impl Parser {
         let Some(token) = self.peek() else {
             return Err(());
         };
+        if token.ty == TokenType::Identifier {
+            if let Some(next) = self.tokens.get(self.index + 1)
+                && SeparatorType::is_separator(next, SeparatorType::Colon)
+            {
+                let label = self.next().unwrap();
+                self.index += 1;
+                let body = self.parse_statement()?;
+                return Ok(Statement::Labeled {
+                    label: Box::new(label),
+                    body: Rc::new(RefCell::new(body)),
+                });
+            }
+        }
         match token.ty {
             TokenType::Keyword { keyword } => match keyword {
                 KeywordType::Func => self.parse_function_decl(false, attributes, modifiers),
@@ -251,6 +264,16 @@ impl Parser {
                         );
                     }
                     self.parse_continue()
+                }
+                KeywordType::Goto => {
+                    if !modifiers.is_empty() {
+                        self.emit_error(
+                            TrussDiagnosticCode::ModifierNotAllowedHere,
+                            format!("Modifiers are not allowed on '{}' declaration", token.value),
+                            &modifiers[0].token,
+                        );
+                    }
+                    self.parse_goto()
                 }
                 KeywordType::Defer => {
                     if !modifiers.is_empty() {
@@ -1056,6 +1079,54 @@ impl Parser {
                         {
                             self.index += 1;
                             let second_expr = self.parse_expression()?;
+
+                            if let Some(t) = self.peek()
+                                && SeparatorType::is_separator(&t, SeparatorType::CloseBracket)
+                            {
+                                self.index = saved_index;
+                                let key_type = self.parse_type_expression()?;
+                                let Some(colon) = self.next() else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::ExpectedType,
+                                        "Expected ':' in dictionary type",
+                                        &left,
+                                    );
+                                    return Err(());
+                                };
+                                if !SeparatorType::is_separator(&colon, SeparatorType::Colon) {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::ExpectedType,
+                                        format!("Expected ':' but found '{}'", colon.value),
+                                        &colon,
+                                    );
+                                    return Err(());
+                                }
+                                let value_type = self.parse_type_expression()?;
+                                let Some(right) = self.next() else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::ExpectedType,
+                                        "Expected ']' in dictionary type",
+                                        &left,
+                                    );
+                                    return Err(());
+                                };
+                                if !SeparatorType::is_separator(&right, SeparatorType::CloseBracket) {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::ExpectedType,
+                                        format!("Expected ']' but found '{}'", right.value),
+                                        &right,
+                                    );
+                                    return Err(());
+                                }
+                                let mut type_expr = Expression::DictionaryType {
+                                    key: Rc::new(RefCell::new(key_type)),
+                                    value: Rc::new(RefCell::new(value_type)),
+                                    ty: None,
+                                };
+                                type_expr = self.parse_type_postfix(type_expr)?;
+                                return Ok(type_expr);
+                            }
+
                             let mut dict_elements = Vec::new();
                             dict_elements.push((
                                 Rc::new(RefCell::new(first_expr)),
@@ -7711,15 +7782,56 @@ impl Parser {
 
     fn parse_break(&mut self) -> Result<Statement, ()> {
         let token = self.next().unwrap();
+        let label = if let Some(t) = self.peek()
+            && t.ty == TokenType::Identifier
+        {
+            Some(Box::new(self.next().unwrap()))
+        } else {
+            None
+        };
         Ok(Statement::Break {
             token: Box::new(token),
+            label,
         })
     }
 
     fn parse_continue(&mut self) -> Result<Statement, ()> {
         let token = self.next().unwrap();
+        let label = if let Some(t) = self.peek()
+            && t.ty == TokenType::Identifier
+        {
+            Some(Box::new(self.next().unwrap()))
+        } else {
+            None
+        };
         Ok(Statement::Continue {
             token: Box::new(token),
+            label,
+        })
+    }
+
+    fn parse_goto(&mut self) -> Result<Statement, ()> {
+        let token = self.next().unwrap();
+        let Some(label) = self.peek() else {
+            self.emit_error(
+                TrussDiagnosticCode::UnexpectedToken,
+                "Expected label after 'goto'",
+                &token,
+            );
+            return Err(());
+        };
+        if label.ty != TokenType::Identifier {
+            self.emit_error(
+                TrussDiagnosticCode::UnexpectedToken,
+                format!("Expected label but found '{}'", label.value),
+                &label,
+            );
+            return Err(());
+        }
+        let label = self.next().unwrap();
+        Ok(Statement::Goto {
+            token: Box::new(token),
+            label: Box::new(label),
         })
     }
 

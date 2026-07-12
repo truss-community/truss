@@ -95,6 +95,7 @@ pub struct IRGenerator<'ctx> {
     error_ptr: Rc<RefCell<Option<PointerValue<'ctx>>>>,
     loop_break_targets: Rc<RefCell<Vec<BasicBlock<'ctx>>>>,
     loop_continue_targets: Rc<RefCell<Vec<BasicBlock<'ctx>>>>,
+    loop_labels: Rc<RefCell<Vec<Option<String>>>>,
     package_name: String,
     module_name: Rc<RefCell<String>>,
     extern_fn_c_names: Rc<RefCell<HashMap<String, String>>>,
@@ -138,6 +139,7 @@ impl<'ctx> IRGenerator<'ctx> {
             error_ptr: Rc::new(RefCell::new(None)),
             loop_break_targets: Rc::new(RefCell::new(Vec::new())),
             loop_continue_targets: Rc::new(RefCell::new(Vec::new())),
+            loop_labels: Rc::new(RefCell::new(Vec::new())),
             package_name: String::new(),
             module_name: Rc::new(RefCell::new(String::new())),
             extern_fn_c_names: Rc::new(RefCell::new(HashMap::new())),
@@ -6843,27 +6845,85 @@ impl<'ctx> IRGenerator<'ctx> {
             Statement::Fallthrough { .. } => {
                 anyhow::bail!("fallthrough outside of match is not supported");
             }
-            Statement::Break { .. } => {
-                let targets = self.loop_break_targets.borrow();
-                if let Some(exit_bb) = targets.last() {
+            Statement::Break { label, .. } => {
+                let exit_bb = {
+                    let targets = self.loop_break_targets.borrow();
+                    let labels = self.loop_labels.borrow();
+                    if let Some(lbl) = label {
+                        let pos = labels.iter().rposition(|l| l.as_deref() == Some(&lbl.value));
+                        match pos {
+                            Some(idx) => Some(targets[idx]),
+                            None => None,
+                        }
+                    } else {
+                        targets.last().copied()
+                    }
+                };
+                if let Some(exit_bb) = exit_bb {
                     self.emit_all_deinit_calls();
                     self.emit_class_releases();
-                    self.builder.build_unconditional_branch(*exit_bb)?;
+                    self.builder.build_unconditional_branch(exit_bb)?;
                     Ok(true)
                 } else {
                     anyhow::bail!("break outside of loop is not supported");
                 }
             }
-            Statement::Continue { .. } => {
-                let targets = self.loop_continue_targets.borrow();
-                if let Some(cont_bb) = targets.last() {
+            Statement::Continue { label, .. } => {
+                let cont_bb = {
+                    let targets = self.loop_continue_targets.borrow();
+                    let labels = self.loop_labels.borrow();
+                    if let Some(lbl) = label {
+                        let pos = labels.iter().rposition(|l| l.as_deref() == Some(&lbl.value));
+                        match pos {
+                            Some(idx) => Some(targets[idx]),
+                            None => None,
+                        }
+                    } else {
+                        targets.last().copied()
+                    }
+                };
+                if let Some(cont_bb) = cont_bb {
                     self.emit_all_deinit_calls();
                     self.emit_class_releases();
-                    self.builder.build_unconditional_branch(*cont_bb)?;
+                    self.builder.build_unconditional_branch(cont_bb)?;
                     Ok(true)
                 } else {
                     anyhow::bail!("continue outside of loop is not supported");
                 }
+            }
+            Statement::Goto { label, .. } => {
+                let label_name = format!("goto_label_{}", label.value);
+                let current_fn = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                let target_bb = self.context.append_basic_block(current_fn, &label_name);
+                self.emit_all_deinit_calls();
+                self.emit_class_releases();
+                self.builder.build_unconditional_branch(target_bb)?;
+                Ok(true)
+            }
+            Statement::Labeled { label, body } => {
+                let is_loop = matches!(
+                    &*body.borrow(),
+                    Statement::Loop { .. }
+                        | Statement::While { .. }
+                        | Statement::RepeatWhile { .. }
+                        | Statement::For { .. }
+                );
+                if is_loop {
+                    self.loop_labels.borrow_mut().push(Some(label.value.clone()));
+                    let result = self.resolve_statement(body.clone());
+                    self.loop_labels.borrow_mut().pop();
+                    result?;
+                } else {
+                    let label_name = format!("goto_label_{}", label.value);
+                    let current_fn = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                    let after_bb = self.context.append_basic_block(current_fn, &label_name);
+                    self.resolve_statement(body.clone())?;
+                    if self.builder.get_insert_block().unwrap().get_terminator().is_none() {
+                        self.builder.build_unconditional_branch(after_bb)?;
+                    }
+                    self.builder.position_at_end(after_bb);
+                }
+                Ok(false)
             }
             Statement::Defer { body, .. } => {
                 self.scope_stack

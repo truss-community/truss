@@ -2840,7 +2840,11 @@ impl SymbolResolver {
             }
             Statement::Fallthrough { .. }
             | Statement::Break { .. }
-            | Statement::Continue { .. } => {}
+            | Statement::Continue { .. }
+            | Statement::Goto { .. } => {}
+            Statement::Labeled { body, .. } => {
+                self.register_symbols(body.clone());
+            }
             Statement::For {
                 pattern,
                 iterator,

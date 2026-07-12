@@ -14082,3 +14082,88 @@ fn test_parse_dictionary_literal_multiple() {
         panic!("Expected VariableDecl");
     }
 }
+
+#[test]
+fn test_parse_labeled_loop() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("_loop: loop { break _loop }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors(), "Should parse labeled loop");
+    if let Statement::Labeled { label, body } = &*program.statements[0].borrow() {
+        assert_eq!(label.value, "_loop");
+        assert!(matches!(&*body.borrow(), Statement::Loop { .. }), "Expected Loop inside Labeled");
+    } else {
+        panic!("Expected Labeled, got {:?}", &*program.statements[0].borrow());
+    }
+}
+
+#[test]
+fn test_parse_break_with_label() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("_loop: loop { break _loop }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::Labeled { body, .. } = &*program.statements[0].borrow() {
+        if let Statement::Loop { body: loop_body, .. } = &*body.borrow() {
+            if let Statement::Break { label, .. } = &*loop_body[0].borrow() {
+                assert_eq!(label.as_ref().unwrap().value, "_loop");
+            } else {
+                panic!("Expected Break with label");
+            }
+        } else {
+            panic!("Expected Loop");
+        }
+    } else {
+        panic!("Expected Labeled");
+    }
+}
+
+#[test]
+fn test_parse_continue_with_label() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("outer: while true { continue outer }".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::Labeled { body, .. } = &*program.statements[0].borrow() {
+        if let Statement::While { body: while_body, .. } = &*body.borrow() {
+            if let Statement::Continue { label, .. } = &*while_body[0].borrow() {
+                assert_eq!(label.as_ref().unwrap().value, "outer");
+            } else {
+                panic!("Expected Continue with label");
+            }
+        } else {
+            panic!("Expected While");
+        }
+    } else {
+        panic!("Expected Labeled");
+    }
+}
+
+#[test]
+fn test_parse_goto() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("goto done".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors());
+    if let Statement::Goto { label, .. } = &*program.statements[0].borrow() {
+        assert_eq!(label.value, "done");
+    } else {
+        panic!("Expected Goto");
+    }
+}

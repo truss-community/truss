@@ -179,9 +179,19 @@ pub enum Statement {
     },
     Break {
         token: Box<Token>,
+        label: Option<Box<Token>>,
     },
     Continue {
         token: Box<Token>,
+        label: Option<Box<Token>>,
+    },
+    Goto {
+        token: Box<Token>,
+        label: Box<Token>,
+    },
+    Labeled {
+        label: Box<Token>,
+        body: Rc<RefCell<Statement>>,
     },
     Defer {
         token: Box<Token>,
@@ -286,6 +296,8 @@ impl Statement {
             Self::Fallthrough { token, .. } => (**token).clone(),
             Self::Break { token, .. } => (**token).clone(),
             Self::Continue { token, .. } => (**token).clone(),
+            Self::Goto { token, .. } => (**token).clone(),
+            Self::Labeled { label, .. } => (**label).clone(),
             Self::Defer { token, .. } => (**token).clone(),
             Self::ModuleDecl { token, .. } => (**token).clone(),
             Self::ImportDecl { token, .. } => (**token).clone(),
@@ -318,6 +330,8 @@ impl Statement {
             Self::Fallthrough { .. } => Ok(vec![]),
             Self::Break { .. } => Ok(vec![]),
             Self::Continue { .. } => Ok(vec![]),
+            Self::Goto { .. } => Ok(vec![]),
+            Self::Labeled { .. } => Ok(vec![]),
             Self::Defer { .. } => Ok(vec![]),
             Self::ModuleDecl { modifiers, .. } => Ok(modifiers.clone()),
             Self::ImportDecl { .. } => Ok(vec![]),

@@ -2189,7 +2189,11 @@ impl TypeResolver {
             }
             Statement::Fallthrough { .. }
             | Statement::Break { .. }
-            | Statement::Continue { .. } => {}
+            | Statement::Continue { .. }
+            | Statement::Goto { .. } => {}
+            Statement::Labeled { body, .. } => {
+                self.resolve_statement(body.clone());
+            }
             Statement::Defer { body, .. } => {
                 self.resolve_block_expression(body);
             }
