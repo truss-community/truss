@@ -1099,31 +1099,6 @@ impl<'ctx> IRGenerator<'ctx> {
         }
     }
 
-    /// Wrap an argument value in Optional.some() if the expected parameter
-    /// type is Optional but the argument is not.
-    fn maybe_wrap_optional_arg(
-        &self,
-        function: inkwell::values::FunctionValue<'ctx>,
-        param_idx: u32,
-        arg_val: BasicValueEnum<'ctx>,
-    ) -> Result<BasicValueEnum<'ctx>> {
-        let param_types = function.get_type().get_param_types();
-        if let Some(&expected_ty) = param_types.get(param_idx as usize) {
-            if let Ok(st) = TryInto::<inkwell::types::StructType<'ctx>>::try_into(expected_ty) {
-                let name = st.get_name().and_then(|n| n.to_str().ok()).unwrap_or("");
-                if name.contains("Optional")
-                    && !arg_val.get_type().is_struct_type()
-                {
-                    return self.build_optional_some_value(arg_val, st);
-                }
-            }
-        }
-        Ok(arg_val)
-    }
-
-    /// Try to find a function by looking up the defining package of
-    /// its type in the program scope. Used for cross-package references
-    /// where the current namespace differs from the type's defining namespace.
     fn find_cross_module_fn_mangled(&self, type_name: &str, fn_suffix: &str) -> Option<String> {
         let scope = self.program_scope.borrow();
         let scope_ref = scope.as_ref()?;
@@ -1161,11 +1136,7 @@ impl<'ctx> IRGenerator<'ctx> {
             return None; // same package, no help
         }
         let base = format!("{}.{}", type_name, fn_suffix).replace('.', "$");
-        if module.is_empty() {
-            Some(format!("_T${}$${}$$", package, base))
-        } else {
-            Some(format!("_T${}${}${}$$", package, module, base))
-        }
+        Some(format!("_T${}${}${}$$", package, module, base))
     }
 
     fn maybe_wrap_for_optional_return(
@@ -7914,8 +7885,24 @@ impl<'ctx> IRGenerator<'ctx> {
                         },
                     ];
                     let fn_name = if is_static {
-                        self.mangle_from_overload(&op_name, sym, &params)
-                            .unwrap_or(op_name.clone())
+                        let left_ty_name = {
+                            let left_ty = left.borrow().get_ty().ok().flatten();
+                            match left_ty.and_then(|t| {
+                                let tb = t.borrow();
+                                match &*tb {
+                                    Type::Struct(n, ..)
+                                    | Type::Class(n, ..)
+                                    | Type::Enum(n, ..) => Some(n.clone()),
+                                    _ => None,
+                                }
+                            }) {
+                                Some(n) => n,
+                                None => op_name.clone(),
+                            }
+                        };
+                        let base = format!("{}.{}", left_ty_name, op_name);
+                        self.mangle_from_overload(&base, sym, &params)
+                            .unwrap_or(base)
                     } else {
                         let left_ty_name = {
                             let left_ty = left.borrow().get_ty().ok().flatten();
@@ -9014,7 +9001,12 @@ impl<'ctx> IRGenerator<'ctx> {
                             if let Some(ptr) = self.lookup_variable(&name.value) {
                                 return Ok(Some(ptr.into()));
                             }
-                            if let Some(f) = self.module.get_function(&name.value) {
+                            let fn_to_addr = self.module.get_function(&name.value)
+                                .or_else(|| {
+                                    self.mangled_fn_names.borrow().get(&name.value)
+                                        .and_then(|mangled| self.module.get_function(mangled))
+                                });
+                            if let Some(f) = fn_to_addr {
                                 let fn_ptr = f.as_global_value().as_pointer_value();
                                 return Ok(Some(fn_ptr.into()));
                             }
