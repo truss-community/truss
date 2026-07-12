@@ -762,6 +762,16 @@ impl SymbolResolver {
                         self.resolve_expression(default_value.clone());
                     }
                 }
+                {
+                    let self_sym = Rc::new(RefCell::new(Symbol::Variable {
+                        name: "self".to_string(),
+                        decl: None,
+                        parameter: None,
+                        is_var: false,
+                        ownership: OwnershipModifier::Strong,
+                    }));
+                    self.enter(self_sym, name);
+                }
                 for case in ast_cases {
                     let case_symbol = Rc::new(RefCell::new(Symbol::EnumCase {
                         name: case.name.value.clone(),
