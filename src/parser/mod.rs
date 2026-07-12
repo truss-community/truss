@@ -5369,6 +5369,98 @@ impl Parser {
             );
             return Err(());
         }
+        if attributes.iter().any(|a| a.name == "iterableEnum") {
+            for case in &cases {
+                if !case.parameters.is_empty() {
+                    self.emit_error(
+                        TrussDiagnosticCode::ParserError,
+                        "#[iterableEnum] cannot be applied to enums with associated values",
+                        case.name.as_ref(),
+                    );
+                    return Err(());
+                }
+            }
+            let enum_name = name.clone();
+            let position = enum_name.position.clone();
+            let file = enum_name.file.clone();
+            let elements: Vec<Rc<RefCell<Expression>>> = cases
+                .iter()
+                .map(|case| {
+                    Rc::new(RefCell::new(Expression::MemberAccess {
+                        object: Rc::new(RefCell::new(Expression::Variable {
+                            name: Box::new(enum_name.clone()),
+                            ty: None,
+                            symbol: None,
+                        })),
+                        member: Box::new(case.name.as_ref().clone()),
+                        ty: None,
+                    }))
+                })
+                .collect();
+            let bracket_left = Box::new(Token::new(
+                "[".to_string(),
+                TokenType::Separator {
+                    separator: SeparatorType::OpenBracket,
+                },
+                position.clone(),
+                file.clone(),
+            ));
+            let bracket_right = Box::new(Token::new(
+                "]".to_string(),
+                TokenType::Separator {
+                    separator: SeparatorType::CloseBracket,
+                },
+                position.clone(),
+                file.clone(),
+            ));
+            let array_expr = Expression::ArrayLiteral {
+                left: bracket_left,
+                elements,
+                right: bracket_right,
+                ty: None,
+            };
+            let return_type = Expression::ArrayType {
+                inner: Rc::new(RefCell::new(Expression::Type {
+                    name: Box::new(enum_name.clone()),
+                    type_parameters: None,
+                    ty: None,
+                })),
+                ty: None,
+            };
+            let func_token = Box::new(Token::new(
+                "func".to_string(),
+                TokenType::Keyword {
+                    keyword: KeywordType::Func,
+                },
+                position.clone(),
+                file.clone(),
+            ));
+            let all_cases_name = Box::new(Token::new(
+                "allCases".to_string(),
+                TokenType::Identifier,
+                position,
+                file,
+            ));
+            body.push(Rc::new(RefCell::new(Statement::FunctionDecl {
+                attributes: vec![],
+                modifiers: vec![],
+                token: func_token,
+                name: all_cases_name,
+                generic_parameters: vec![],
+                parameters: vec![],
+                return_type: Some(Rc::new(RefCell::new(return_type))),
+                throws_types: None,
+                body: Rc::new(RefCell::new(FunctionBody::Expression(Rc::new(
+                    RefCell::new(array_expr),
+                )))),
+                where_clause: None,
+                scope: None,
+                ty: None,
+                static_method: true,
+                mutating: false,
+                operator_fixity: None,
+            })));
+        }
         Ok(Statement::EnumDecl {
             attributes,
             modifiers,

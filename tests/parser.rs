@@ -14167,3 +14167,134 @@ fn test_parse_goto() {
         panic!("Expected Goto");
     }
 }
+
+#[test]
+fn test_iterable_enum_synthesizes_all_cases() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "#[iterableEnum]\nenum Color { case Red; case Green; case Blue }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let engine_ref = engine.borrow();
+    assert!(engine_ref.get_errors().is_empty());
+    assert_eq!(program.statements.len(), 1);
+    match &*program.statements[0].borrow() {
+        Statement::EnumDecl { body, cases, .. } => {
+            assert_eq!(cases.len(), 3);
+            let all_cases = body.iter().find(|s| {
+                matches!(&*s.borrow(), Statement::FunctionDecl { name, static_method: true, .. } if name.value == "allCases")
+            });
+            assert!(all_cases.is_some(), "allCases static method should be injected");
+            if let Some(s) = all_cases {
+                if let Statement::FunctionDecl {
+                    return_type,
+                    body: fn_body,
+                    static_method,
+                    ..
+                } = &*s.borrow()
+                {
+                    assert!(*static_method);
+                    assert!(return_type.is_some(), "allCases should have return type");
+                    let body_ref = fn_body.borrow();
+                    match &*body_ref {
+                        FunctionBody::Expression(expr) => {
+                            assert!(
+                                matches!(&*expr.borrow(), Expression::ArrayLiteral { elements, .. } if elements.len() == 3),
+                                "allCases body should be array literal with 3 elements"
+                            );
+                        }
+                        _ => panic!("Expected expression body for allCases"),
+                    }
+                }
+            }
+        }
+        _ => panic!("Expected EnumDecl"),
+    }
+}
+
+#[test]
+fn test_iterable_enum_with_raw_value() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "#[iterableEnum]\nenum Code: UInt8 { case A = 1; case B = 2; case C = 3 }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let engine_ref = engine.borrow();
+    assert!(engine_ref.get_errors().is_empty());
+    match &*program.statements[0].borrow() {
+        Statement::EnumDecl { body, .. } => {
+            let all_cases = body.iter().find(|s| {
+                matches!(&*s.borrow(), Statement::FunctionDecl { name, static_method: true, .. } if name.value == "allCases")
+            });
+            assert!(all_cases.is_some());
+        }
+        _ => panic!("Expected EnumDecl"),
+    }
+}
+
+#[test]
+fn test_iterable_enum_rejects_associated_values() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "#[iterableEnum]\nenum Bad { case A(Int32); case B }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let _ = parser.parse();
+    let engine_ref = engine.borrow();
+    let errors = engine_ref.get_errors();
+    assert_eq!(
+        errors.len(),
+        1,
+        "Should error on enum with associated values, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_iterable_enum_no_cases() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "#[iterableEnum]\nenum Empty { }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let engine_ref = engine.borrow();
+    assert!(engine_ref.get_errors().is_empty());
+    match &*program.statements[0].borrow() {
+        Statement::EnumDecl { body, .. } => {
+            let all_cases = body.iter().find(|s| {
+                matches!(&*s.borrow(), Statement::FunctionDecl { name, static_method: true, .. } if name.value == "allCases")
+            });
+            assert!(all_cases.is_some());
+            if let Some(s) = all_cases {
+                if let Statement::FunctionDecl { body: fn_body, .. } = &*s.borrow() {
+                    if let FunctionBody::Expression(expr) = &*fn_body.borrow() {
+                        assert!(
+                            matches!(&*expr.borrow(), Expression::ArrayLiteral { elements, .. } if elements.is_empty()),
+                            "allCases for empty enum should be empty array"
+                        );
+                    }
+                }
+            }
+        }
+        _ => panic!("Expected EnumDecl"),
+    }
+}
