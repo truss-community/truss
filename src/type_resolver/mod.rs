@@ -2975,6 +2975,15 @@ impl TypeResolver {
                         {
                             *ty = Some(left_ty.clone());
                         }
+                        Expression::NullLiteral { ty, .. }
+                            if ty.is_none() => {
+                            let left_is_nullable = matches!(&*left_ty.borrow(),
+                                Type::Enum(name, ..) if name == "Optional"
+                            ) || matches!(&*left_ty.borrow(), Type::Pointer(_) | Type::NonNullPointer(_));
+                            if left_is_nullable {
+                                *ty = Some(left_ty.clone());
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -8015,6 +8024,25 @@ impl TypeResolver {
                     || matches!(&right_ty, Type::GenericParam(_))
                 {
                     return None;
+                }
+                // Allow comparing Optional<T> or Pointer<T> with null (Type::Void)
+                if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                    let left_is_nullable = matches!(&left_ty,
+                        Type::Enum(name, ..) if name == "Optional"
+                    ) || matches!(&left_ty, Type::Pointer(_) | Type::NonNullPointer(_));
+                    let right_is_nullable = matches!(&right_ty,
+                        Type::Enum(name, ..) if name == "Optional"
+                    ) || matches!(&right_ty, Type::Pointer(_) | Type::NonNullPointer(_));
+                    if (left_is_nullable && matches!(right_ty, Type::Void))
+                    || (right_is_nullable && matches!(left_ty, Type::Void))
+                    || (matches!(left_ty, Type::Void) && matches!(right_ty, Type::Void))
+                    {
+                        return Some(Rc::new(RefCell::new(Type::Struct(
+                            "Bool".to_string(),
+                            WeakSymbol(std::rc::Weak::new()),
+                            vec![],
+                        ))));
+                    }
                 }
                 // For struct/class/enum types with equality operators, always
                 // delegate to operator overload resolution so that
