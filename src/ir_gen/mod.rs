@@ -1018,12 +1018,24 @@ impl<'ctx> IRGenerator<'ctx> {
             .get(&enum_name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Enum payload type '{}' not found", enum_name))?;
-        let struct_ty = self_ptr.get_type();
-        let struct_val = self.builder.build_load(struct_ty, self_ptr, "")?;
         let some_payload_type = payloads_type
             .get_field_type_at_index(1)
             .ok_or_else(|| anyhow::anyhow!("Some payload slot not found"))?;
         let some_payload_struct = some_payload_type.into_struct_type();
+        let struct_ty = self_ptr.get_type();
+        // For class inits, self_ptr IS the class pointer (payload should be the pointer value).
+        // For struct inits, self_ptr points to the struct (payload should be the loaded struct).
+        let struct_val: BasicValueEnum<'ctx> = {
+            let some_first_field = some_payload_struct.get_field_type_at_index(0)
+                .ok_or_else(|| anyhow::anyhow!("Some payload field not found"))?;
+            if some_first_field.is_pointer_type() {
+                // Class type: payload is the pointer value itself
+                self_ptr.into()
+            } else {
+                // Struct type: load the struct value from the pointer
+                self.builder.build_load(struct_ty, self_ptr, "")?
+            }
+        };
         let some_payload = some_payload_struct.const_named_struct(&[struct_val.into()]);
         let tag = self.context.i8_type().const_int(1, false);
         let optional_val = enum_type.const_named_struct(&[tag.into(), some_payload.into()]);
