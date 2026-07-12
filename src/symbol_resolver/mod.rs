@@ -1793,23 +1793,31 @@ impl SymbolResolver {
                                 .as_ref()
                                 .and_then(|p| resolve_module(p, &module_path));
                             if let Some(module) = module {
-                                let (names, target_scope) = {
+                                let (names, type_names, target_scope) = {
                                     let scope = module.borrow().scope.clone();
-                                    let names = scope
-                                        .as_ref()
-                                        .map(|s| s.borrow().name_table.keys().cloned().collect::<Vec<_>>())
-                                        .unwrap_or_default();
-                                    (names, scope)
+                                    let (names, type_names) = {
+                                        let s = scope.as_ref().map(|s| s.borrow());
+                                        let names = s
+                                            .as_ref()
+                                            .map(|s| s.name_table.keys().cloned().collect::<Vec<_>>())
+                                            .unwrap_or_default();
+                                        let type_names = s
+                                            .as_ref()
+                                            .map(|s| s.type_env.keys().cloned().collect::<Vec<_>>())
+                                            .unwrap_or_default();
+                                        (names, type_names)
+                                    };
+                                    (names, type_names, scope)
                                 };
-                                for name in names {
+                                for name in &names {
                                     if let Some(ref ts) = target_scope {
-                                        if ts.borrow().imported_names.contains(&name) {
+                                        if ts.borrow().imported_names.contains(name) {
                                             continue;
                                         }
                                     }
                                     if let Some(symbol) = target_scope
                                         .as_ref()
-                                        .and_then(|scope| scope.borrow().get_symbol(&name))
+                                        .and_then(|scope| scope.borrow().get_symbol(name))
                                     {
                                         let name_token = Token::new(
                                             name.clone(),
@@ -1819,7 +1827,39 @@ impl SymbolResolver {
                                         );
                                         self.enter(symbol, &name_token);
                                         if let Some(scope) = self.current_scope.as_ref() {
-                                            scope.borrow_mut().imported_names.insert(name);
+                                            scope.borrow_mut().imported_names.insert(name.clone());
+                                        }
+                                    }
+                                    if let Some(ty) = target_scope
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
+                                    {
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
+                                        }
+                                    }
+                                }
+                                for name in &type_names {
+                                    if names.contains(name) {
+                                        continue;
+                                    }
+                                    if let Some(ref ts) = target_scope {
+                                        if ts.borrow().imported_names.contains(name) {
+                                            continue;
+                                        }
+                                    }
+                                    if self.current_scope.as_ref().is_some_and(|scope| {
+                                        scope.borrow().type_env.contains_key(name)
+                                    }) {
+                                        continue;
+                                    }
+                                    if let Some(ty) = target_scope
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
+                                    {
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
+                                            scope.borrow_mut().imported_names.insert(name.clone());
                                         }
                                     }
                                 }
