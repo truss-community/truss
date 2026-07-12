@@ -2450,11 +2450,12 @@ impl TypeResolver {
         let variant = if type_name == "Optional" {
             Type::Enum(name, symbol, type_params)
         } else if let Some(ty) = truss_type {
-            match &*ty.borrow() {
+            let v = match &*ty.borrow() {
                 Type::Enum(..) => Type::Enum(name, symbol, type_params),
                 Type::Class(..) => Type::Class(name, symbol, type_params),
                 _ => Type::Struct(name, symbol, type_params),
-            }
+            };
+            v
         } else {
             Type::Struct(name, symbol, type_params)
         };
@@ -2465,17 +2466,24 @@ impl TypeResolver {
         if let Some(truss_pkg) = self.packages.get("Truss") {
             if let Some(truss_module) = truss_pkg.borrow().modules.get("Truss") {
                 if let Some(scope) = &truss_module.borrow().scope {
-                    return scope.borrow().get_type(type_name);
+                    if let Some(ty) = scope.borrow().get_type(type_name) {
+                        return Some(ty);
+                    }
+                }
+            }
+        }
+        for pkg in self.packages.values() {
+            for module in pkg.borrow().modules.values() {
+                if let Some(scope) = &module.borrow().scope {
+                    if let Some(ty) = scope.borrow().get_type(type_name) {
+                        return Some(ty);
+                    }
                 }
             }
         }
         None
     }
 
-    /// Recursively find `Case` (if-let) bindings in compound conditions and
-    /// set them in the current scope before the condition is type-checked.
-    /// This makes let-bound variables (e.g. `end` in `let end = self.end`)
-    /// available in the rest of the condition expression (e.g. `current >= end`).
     fn set_bindings_in_condition(&mut self, condition: &Rc<RefCell<Expression>>) {
         let cond = condition.borrow();
         match &*cond {
@@ -2535,9 +2543,6 @@ impl TypeResolver {
             else_ = e.clone();
         }
 
-        // Set if-let bindings in compound conditions BEFORE type inference,
-        // so bound variables (e.g. `end` in `let end = self.end`) are
-        // available when type-checking the rest of the condition expression.
         self.set_bindings_in_condition(&condition);
 
         let cond_ty = self.infer_type(condition.clone())?;
