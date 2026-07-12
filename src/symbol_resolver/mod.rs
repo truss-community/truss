@@ -164,11 +164,12 @@ impl SymbolResolver {
                 }
 
                 let saved_scope = self.current_scope.clone();
-                if scope.is_none() {
+                if module.borrow().scope.is_some() {
+                    *scope = module.borrow().scope.clone();
+                    self.current_scope = scope.clone();
+                } else {
                     *scope = Some(self.enter_scope(None));
                     module.borrow_mut().scope = scope.clone();
-                } else {
-                    self.current_scope = scope.clone();
                 }
                 scope.as_ref().unwrap().borrow_mut().module_name = Some(full_path);
 
@@ -1343,11 +1344,12 @@ impl SymbolResolver {
                 self.enter(module_symbol, name);
 
                 let saved_scope = self.current_scope.clone();
-                if scope.is_none() {
+                if module.borrow().scope.is_some() {
+                    *scope = module.borrow().scope.clone();
+                    self.current_scope = scope.clone();
+                } else {
                     *scope = Some(self.enter_scope(None));
                     module.borrow_mut().scope = scope.clone();
-                } else {
-                    self.current_scope = scope.clone();
                 }
                 scope.as_ref().unwrap().borrow_mut().module_name = Some(full_path);
 
