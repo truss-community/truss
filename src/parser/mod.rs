@@ -118,10 +118,10 @@ impl Parser {
 
     fn parse_statement(&mut self) -> Result<Statement, ()> {
         let attributes = self.parse_attributes()?;
-        if let Some(token) = self.peek() {
-            if SeparatorType::is_separator(&token, SeparatorType::Hash) {
-                return self.parse_preprocessor_directive();
-            }
+        if let Some(token) = self.peek()
+            && SeparatorType::is_separator(&token, SeparatorType::Hash)
+        {
+            return self.parse_preprocessor_directive();
         }
         if let Some(fixity) = self.try_parse_operator_fixity() {
             let token = self.next().unwrap();
@@ -131,18 +131,17 @@ impl Parser {
         let Some(token) = self.peek() else {
             return Err(());
         };
-        if token.ty == TokenType::Identifier {
-            if let Some(next) = self.tokens.get(self.index + 1)
-                && SeparatorType::is_separator(next, SeparatorType::Colon)
-            {
-                let label = self.next().unwrap();
-                self.index += 1;
-                let body = self.parse_statement()?;
-                return Ok(Statement::Labeled {
-                    label: Box::new(label),
-                    body: Rc::new(RefCell::new(body)),
-                });
-            }
+        if token.ty == TokenType::Identifier
+            && let Some(next) = self.tokens.get(self.index + 1)
+            && SeparatorType::is_separator(next, SeparatorType::Colon)
+        {
+            let label = self.next().unwrap();
+            self.index += 1;
+            let body = self.parse_statement()?;
+            return Ok(Statement::Labeled {
+                label: Box::new(label),
+                body: Rc::new(RefCell::new(body)),
+            });
         }
         match token.ty {
             TokenType::Keyword { keyword } => match keyword {
@@ -306,7 +305,7 @@ impl Parser {
                         "Expected 'prefix', 'postfix', or 'infix' before 'operator'".to_string(),
                         &token,
                     );
-                    return Err(());
+                    Err(())
                 }
                 KeywordType::Macro => {
                     if !modifiers.is_empty() {
@@ -532,19 +531,19 @@ impl Parser {
                             let range_token = Token::new(
                                 "range".to_string(),
                                 TokenType::Identifier,
-                                token.position.clone(),
+                                token.position,
                                 token.file.clone(),
                             );
                             let from_label = Token::new(
                                 "from".to_string(),
                                 TokenType::Identifier,
-                                token.position.clone(),
+                                token.position,
                                 token.file.clone(),
                             );
                             let to_label = Token::new(
                                 "to".to_string(),
                                 TokenType::Identifier,
-                                token.position.clone(),
+                                token.position,
                                 token.file.clone(),
                             );
                             left = Expression::Call {
@@ -582,19 +581,19 @@ impl Parser {
                         let left_label = Token::new(
                             "left".to_string(),
                             TokenType::Identifier,
-                            token.position.clone(),
+                            token.position,
                             token.file.clone(),
                         );
                         let right_label = Token::new(
                             "right".to_string(),
                             TokenType::Identifier,
-                            token.position.clone(),
+                            token.position,
                             token.file.clone(),
                         );
                         let callee_name = Token::new(
                             op_name.clone(),
                             TokenType::Identifier,
-                            token.position.clone(),
+                            token.position,
                             token.file.clone(),
                         );
                         left = Expression::Call {
@@ -628,19 +627,19 @@ impl Parser {
                     let left_label = Token::new(
                         "left".to_string(),
                         TokenType::Identifier,
-                        token.position.clone(),
+                        token.position,
                         token.file.clone(),
                     );
                     let right_label = Token::new(
                         "right".to_string(),
                         TokenType::Identifier,
-                        token.position.clone(),
+                        token.position,
                         token.file.clone(),
                     );
                     let callee_name = Token::new(
                         op_name,
                         TokenType::Identifier,
-                        token.position.clone(),
+                        token.position,
                         token.file.clone(),
                     );
                     left = Expression::Call {
@@ -775,7 +774,7 @@ impl Parser {
             let arg_label = Token::new(
                 "value".to_string(),
                 TokenType::Identifier,
-                token.position.clone(),
+                token.position,
                 token.file.clone(),
             );
             Ok(Expression::Call {
@@ -783,7 +782,7 @@ impl Parser {
                     name: Box::new(Token::new(
                         op_name,
                         TokenType::Identifier,
-                        token.position.clone(),
+                        token.position,
                         token.file.clone(),
                     )),
                     ty: None,
@@ -833,7 +832,7 @@ impl Parser {
                             let arg_label = Token::new(
                                 "value".to_string(),
                                 TokenType::Identifier,
-                                token.position.clone(),
+                                token.position,
                                 token.file.clone(),
                             );
                             Ok(Expression::Call {
@@ -841,7 +840,7 @@ impl Parser {
                                     name: Box::new(Token::new(
                                         op_name,
                                         TokenType::Identifier,
-                                        token.position.clone(),
+                                        token.position,
                                         token.file.clone(),
                                     )),
                                     ty: None,
@@ -870,7 +869,7 @@ impl Parser {
                 let arg_label = Token::new(
                     "value".to_string(),
                     TokenType::Identifier,
-                    token.position.clone(),
+                    token.position,
                     token.file.clone(),
                 );
                 Ok(Expression::Call {
@@ -878,7 +877,7 @@ impl Parser {
                         name: Box::new(Token::new(
                             op_name,
                             TokenType::Identifier,
-                            token.position.clone(),
+                            token.position,
                             token.file.clone(),
                         )),
                         ty: None,
@@ -1110,7 +1109,8 @@ impl Parser {
                                     );
                                     return Err(());
                                 };
-                                if !SeparatorType::is_separator(&right, SeparatorType::CloseBracket) {
+                                if !SeparatorType::is_separator(&right, SeparatorType::CloseBracket)
+                                {
                                     self.emit_error(
                                         TrussDiagnosticCode::ExpectedType,
                                         format!("Expected ']' but found '{}'", right.value),
@@ -2968,8 +2968,7 @@ impl Parser {
         let symbol = if let Some(t) = self.peek()
             && matches!(t.ty, TokenType::Identifier)
         {
-            let sym = self.next().unwrap().value.clone();
-            sym
+            self.next().unwrap().value.clone()
         } else {
             let mut sym = String::new();
             while let Some(t) = self.peek() {
@@ -3964,7 +3963,7 @@ impl Parser {
             .unwrap_or(Token::new(
                 "_".to_string(),
                 TokenType::Identifier,
-                token.position.clone(),
+                token.position,
                 token.file.clone(),
             ));
         let pattern = Some(pattern);
@@ -5308,8 +5307,7 @@ impl Parser {
                                 TokenType::Operator {
                                     operator: OperatorType::Assign,
                                 }
-                            )
-                        {
+                            ) {
                             self.index += 1;
                             Some(Rc::new(RefCell::new(self.parse_expression()?)))
                         } else {
@@ -7054,7 +7052,7 @@ impl Parser {
         let some_token = Token::new(
             "Some".to_string(),
             TokenType::Identifier,
-            let_token.position.clone(),
+            let_token.position,
             let_token.file.clone(),
         );
 

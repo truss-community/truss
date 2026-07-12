@@ -523,6 +523,12 @@ impl BuildOrchestrator {
 
             let context = inkwell::context::Context::create();
             let ir_engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
+
+            let mut all_targets: Vec<(String, Vec<Rc<RefCell<Statement>>>)> = Vec::new();
+            for (target_name, target_stmts) in &self.local_target_stmts {
+                all_targets.push((target_name.clone(), target_stmts.clone()));
+            }
+            all_targets.push((pkg_name.clone(), prog.statements.clone()));
             let scope = main_module.borrow().scope.clone();
             let main_scope = match scope {
                 Some(s) => s,
@@ -543,8 +549,9 @@ impl BuildOrchestrator {
                     file: Rc::new(target_name.clone()),
                     statements: target_stmts.clone(),
                 };
-                let target_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(target_name, "");
+                let mut target_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(target_name, "").with_packages(self.packages.clone());
+                target_ir_gen.predeclare_types(&all_targets);
                 let result = target_ir_gen.generate_with_stdlib(
                     &target_prog,
                     &stdlib_stmts,
@@ -614,8 +621,9 @@ impl BuildOrchestrator {
                     }
                 }
 
-                let file_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
+                let mut file_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "").with_packages(self.packages.clone());
+                file_ir_gen.predeclare_types(&all_targets);
                 let file_modules_result =
                     file_ir_gen.generate_with_stdlib(&program, &stdlib_stmts, main_scope.clone());
                 if stdlib_to_emit.is_none() {
@@ -638,8 +646,9 @@ impl BuildOrchestrator {
             let combined_file_module: Option<inkwell::module::Module<'_>> = if file_modules
                 .is_empty()
             {
-                let single_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "");
+                let mut single_ir_gen =
+                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "").with_packages(self.packages.clone());
+                single_ir_gen.predeclare_types(&all_targets);
                 let modules = single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
                 if ir_engine.borrow().has_errors() {
                     let formatted = duck_diagnostic::format_all_smart(&*ir_engine.borrow(), false);

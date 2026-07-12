@@ -1361,6 +1361,41 @@ impl SymbolResolver {
                 self.current_module = saved_module;
             }
             Statement::ImportDecl { .. } => {}
+            Statement::VariableDecl {
+                name,
+                pattern: decl_pattern,
+                token: var_token,
+                accessors,
+                ownership,
+                ..
+            } => {
+                if let Some(pattern) = decl_pattern {
+                    let is_var = var_token.value == "var";
+                    Self::resolve_variable_pattern(pattern, stmt.clone(), is_var, self);
+                } else if name.value != "_" {
+                    let is_var = var_token.value == "var";
+                    let symbol = Rc::new(RefCell::new(Symbol::Variable {
+                        name: name.value.clone(),
+                        decl: Some(stmt.clone()),
+                        parameter: None,
+                        is_var,
+                        ownership: *ownership,
+                    }));
+                    self.enter(symbol, name);
+                }
+                if !accessors.is_empty() {
+                    for accessor in accessors {
+                        let accessor_scope =
+                            Rc::new(RefCell::new(Scope::new(self.current_scope.clone())));
+                        let saved = self.current_scope.clone();
+                        self.current_scope = Some(accessor_scope.clone());
+                        for s in &accessor.body {
+                            self.register_symbols(s.clone());
+                        }
+                        self.current_scope = saved;
+                    }
+                }
+            }
             Statement::MacroDecl { name, .. } => {
                 let symbol = Rc::new(RefCell::new(Symbol::Macro {
                     name: name.value.clone(),

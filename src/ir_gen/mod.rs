@@ -74,6 +74,7 @@ pub struct IRGenerator<'ctx> {
     enum_types: Rc<RefCell<HashMap<String, inkwell::types::StructType<'ctx>>>>,
     enum_payload_types: Rc<RefCell<HashMap<String, inkwell::types::StructType<'ctx>>>>,
     program_scope: Rc<RefCell<Option<Rc<RefCell<TrussScope>>>>>,
+    packages: Rc<RefCell<HashMap<String, Rc<RefCell<crate::krate::Package>>>>>,
     current_struct: Rc<RefCell<Option<String>>>,
     current_accessor_struct: Rc<RefCell<Option<(String, PointerValue<'ctx>)>>>,
     vtable_types: Rc<RefCell<HashMap<String, inkwell::types::StructType<'ctx>>>>,
@@ -120,6 +121,7 @@ impl<'ctx> IRGenerator<'ctx> {
             enum_types: Rc::new(RefCell::new(HashMap::new())),
             enum_payload_types: Rc::new(RefCell::new(HashMap::new())),
             program_scope: Rc::new(RefCell::new(None)),
+            packages: Rc::new(RefCell::new(HashMap::new())),
             current_struct: Rc::new(RefCell::new(None)),
             current_accessor_struct: Rc::new(RefCell::new(None)),
             vtable_types: Rc::new(RefCell::new(HashMap::new())),
@@ -152,6 +154,11 @@ impl<'ctx> IRGenerator<'ctx> {
     pub fn with_namespace(mut self, package: &str, module: &str) -> Self {
         self.package_name = package.to_string();
         *self.module_name.borrow_mut() = module.to_string();
+        self
+    }
+
+    pub fn with_packages(mut self, pkgs: HashMap<String, Rc<RefCell<crate::krate::Package>>>) -> Self {
+        *self.packages.borrow_mut() = pkgs;
         self
     }
 
@@ -431,6 +438,7 @@ impl<'ctx> IRGenerator<'ctx> {
         self.stdlib_module = Some(compiled_stdlib_rc.clone());
 
         self.scope_stack.borrow_mut().clear();
+        self.scope_stack.borrow_mut().push(Scope::new());
 
         for func in compiled_stdlib_rc.get_functions() {
             let name = func.get_name().to_str().unwrap_or("").to_string();
@@ -641,6 +649,29 @@ impl<'ctx> IRGenerator<'ctx> {
         }
     }
 
+    pub fn predeclare_types(
+        &mut self,
+        targets: &[(String, Vec<Rc<RefCell<Statement>>>)],
+    ) {
+        let saved_pkg = self.package_name.clone();
+        let saved_mod = self.module_name.borrow().clone();
+        for (pkg_name, stmts) in targets {
+            self.package_name = pkg_name.clone();
+            *self.module_name.borrow_mut() = String::new();
+            for stmt in stmts {
+                self.declare_struct_types(stmt.clone());
+            }
+            for stmt in stmts {
+                self.declare_class_types(stmt.clone());
+            }
+            for stmt in stmts {
+                self.declare_enum_types(stmt.clone());
+            }
+        }
+        self.package_name = saved_pkg;
+        *self.module_name.borrow_mut() = saved_mod;
+    }
+
     fn declare_struct_types(&self, statement: Rc<RefCell<Statement>>) {
         if let Statement::StructDecl {
             name, attributes, ..
@@ -657,7 +688,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     &self.module_name.borrow(),
                     struct_name,
                 );
-                let struct_type = self.context.opaque_struct_type(&mangled);
+                let struct_type = self.context.get_struct_type(&mangled)
+                    .unwrap_or_else(|| self.context.opaque_struct_type(&mangled));
                 self.struct_types
                     .borrow_mut()
                     .insert(struct_name.clone(), struct_type);
@@ -766,7 +798,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     &self.module_name.borrow(),
                     class_name,
                 );
-                let class_type = self.context.opaque_struct_type(&mangled);
+                let class_type = self.context.get_struct_type(&mangled)
+                    .unwrap_or_else(|| self.context.opaque_struct_type(&mangled));
                 self.class_types
                     .borrow_mut()
                     .insert(class_name.clone(), class_type);
@@ -825,11 +858,7 @@ impl<'ctx> IRGenerator<'ctx> {
     }
 
     fn collect_class_stored_field_types(&self, class_name: &str) -> Vec<BasicTypeEnum<'ctx>> {
-        let binding = self.program_scope.borrow();
-        let Some(scope) = binding.as_ref() else {
-            return vec![];
-        };
-        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
+        let Some(symbol) = self.find_class_symbol(class_name) else {
             return vec![];
         };
 
@@ -1178,7 +1207,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     &*self.module_name.borrow(),
                     enum_name,
                 );
-                let enum_type = self.context.opaque_struct_type(&mangled);
+                let enum_type = self.context.get_struct_type(&mangled)
+                    .unwrap_or_else(|| self.context.opaque_struct_type(&mangled));
                 self.enum_types
                     .borrow_mut()
                     .insert(enum_name.clone(), enum_type);
@@ -1189,7 +1219,8 @@ impl<'ctx> IRGenerator<'ctx> {
                     &*self.module_name.borrow(),
                     &format!("{}.payloads", enum_name),
                 );
-                let payload_type = self.context.opaque_struct_type(&mangled_payloads);
+                let payload_type = self.context.get_struct_type(&mangled_payloads)
+                    .unwrap_or_else(|| self.context.opaque_struct_type(&mangled_payloads));
                 self.enum_payload_types
                     .borrow_mut()
                     .insert(enum_name.clone(), payload_type);
@@ -1405,12 +1436,31 @@ impl<'ctx> IRGenerator<'ctx> {
         )
     }
 
-    fn get_stored_class_field_index(&self, class_name: &str, field_name: &str) -> Result<usize> {
-        if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope
+    fn find_class_symbol(&self, name: &str) -> Option<Rc<RefCell<Symbol>>> {
+        // Search in program_scope first
+        if let Some(scope) = self.program_scope.borrow().as_ref() {
+            if let Some(sym) = scope
                 .borrow()
-                .get_symbol_qualified(class_name)
-                .or_else(|| scope.borrow().get_symbol_deep(class_name))
+                .get_symbol_qualified(name)
+                .or_else(|| scope.borrow().get_symbol_deep(name))
+            {
+                return Some(sym);
+            }
+        }
+        // Fallback: search in all packages' modules recursively
+        for pkg in self.packages.borrow().values() {
+            for module in pkg.borrow().modules.values() {
+                if let Some(module_scope) = module.borrow().scope.clone() {
+                    if let Some(sym) = module_scope.borrow().get_symbol_deep(name) {
+                        return Some(sym);
+                    }
+                }
+            }
+        }
+        None
+    }
+    fn get_stored_class_field_index(&self, class_name: &str, field_name: &str) -> Result<usize> {
+        if let Some(symbol) = self.find_class_symbol(class_name)
         {
             let binding = symbol.borrow();
             let (decl, properties) = match &*binding {
@@ -1482,11 +1532,7 @@ impl<'ctx> IRGenerator<'ctx> {
     }
 
     fn get_class_stored_field_count(&self, class_name: &str) -> usize {
-        let binding = self.program_scope.borrow();
-        let Some(scope) = binding.as_ref() else {
-            return 0;
-        };
-        let Some(symbol) = scope.borrow().get_symbol_deep(class_name) else {
+        let Some(symbol) = self.find_class_symbol(class_name) else {
             return 0;
         };
 
@@ -5028,6 +5074,14 @@ impl<'ctx> IRGenerator<'ctx> {
                     {
                         self.builder.build_store(ptr, init_val)?;
                     }
+                }
+
+                // Top-level or module-level variable declaration (not inside a struct/class)
+                if self.current_struct.borrow().is_none() && self.lookup_variable(&name.value).is_none() {
+                    let gv = self.module.add_global(llvm_var_type, None, &format!("__global_{}", name.value));
+                    gv.set_initializer(&llvm_var_type.const_zero());
+                    let ptr = gv.as_pointer_value();
+                    self.declare_variable_typed(name.value.clone(), ptr, llvm_var_type);
                 }
 
                 if let Some(ref sname) = *self.current_struct.borrow() {
@@ -15790,7 +15844,14 @@ impl<'ctx> IRGenerator<'ctx> {
                 let ptr_type: BasicTypeEnum<'ctx> =
                     self.context.ptr_type(inkwell::AddressSpace::from(0)).into();
                 if !self.class_types.borrow().contains_key(name) {
-                    let class_type = self.context.opaque_struct_type(name);
+                    let mangled = Self::mangle_type_name(
+                        "C",
+                        &self.package_name,
+                        &self.module_name.borrow(),
+                        name,
+                    );
+                    let class_type = self.context.get_struct_type(&mangled)
+                        .unwrap_or_else(|| self.context.opaque_struct_type(&mangled));
                     self.class_types
                         .borrow_mut()
                         .insert(name.clone(), class_type);
