@@ -5982,28 +5982,10 @@ fn test_addr_of_static_method_type() {
 fn test_addr_of_instance_method_type() {
     let code = "struct Point { var x: Int32; func isZero() -> Bool { return self.x == 0 } }
                  func test() -> func() -> Bool { return &Point.isZero }";
-    let engine = Rc::new(RefCell::new(TrussDiagnosticEngine::new()));
-    let mut lexer = Lexer::new(
-        CharStream::new(code.to_string(), Rc::new("".to_string())),
-        engine.clone(),
-    );
-    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
-    let program = parser.parse();
-    let (packages, _krate) = truss::krate::single_package_map("test");
-    let mut symbol_resolver =
-        SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
-    let module_id = symbol_resolver.resolve(&program, "test".to_string());
-    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
-    type_resolver.resolve(&program, module_id);
-
-    let engine_ref = engine.borrow();
-    let errors = engine_ref.get_errors();
-    assert_eq!(
-        errors.len(),
-        0,
-        "Expected no errors for &Type.instanceMethod, got: {:?}",
-        errors
-    );
+    let errors = run_type_check_with_stdlib(code, &[
+        "#[builtintype] public struct Int32 { func == (rhs: Self) -> Bool { return false } }",
+    ]);
+    assert_eq!(errors, 0, "Expected no errors for &Type.instanceMethod");
 }
 
 #[test]
