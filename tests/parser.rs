@@ -13968,3 +13968,117 @@ fn test_parse_chained_trailing_closures_still_works() {
         panic!("Expected chained Call(filter) with trailing closure");
     }
 }
+
+#[test]
+fn test_parse_dictionary_type_optional() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("let x: [String: Int32]? = null".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors(), "Should parse [K: V]? without errors");
+    if let Statement::VariableDecl {
+        type_expression: Some(ty),
+        ..
+    } = &*program.statements[0].borrow()
+    {
+        let ty = ty.borrow();
+        if let Expression::OptionalType { inner, .. } = &*ty {
+            if let Expression::DictionaryType { key, value, .. } = &*inner.borrow() {
+                if let Expression::Type { name: kn, .. } = &*key.borrow() {
+                    assert_eq!(kn.value, "String");
+                } else {
+                    panic!("Expected Type for dict key");
+                }
+                if let Expression::Type { name: vn, .. } = &*value.borrow() {
+                    assert_eq!(vn.value, "Int32");
+                } else {
+                    panic!("Expected Type for dict value");
+                }
+            } else {
+                panic!("Expected DictionaryType inside OptionalType");
+            }
+        } else {
+            panic!("Expected OptionalType, got {:?}", *ty);
+        }
+    } else {
+        panic!("Expected VariableDecl");
+    }
+}
+
+#[test]
+fn test_parse_empty_dictionary_literal() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("let x = [:]".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors(), "Should parse [:] without errors");
+    if let Statement::VariableDecl {
+        initializer: Some(init),
+        ..
+    } = &*program.statements[0].borrow()
+    {
+        if let Expression::DictionaryLiteral { elements, .. } = &*init.borrow() {
+            assert!(elements.is_empty(), "Expected empty elements");
+        } else {
+            panic!("Expected DictionaryLiteral, got {:?}", &*init.borrow());
+        }
+    } else {
+        panic!("Expected VariableDecl");
+    }
+}
+
+#[test]
+fn test_parse_dictionary_literal_single_trailing_comma() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("let x = [\"key\": 42,]".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors(), "Should parse [k: v,] without errors");
+    if let Statement::VariableDecl {
+        initializer: Some(init),
+        ..
+    } = &*program.statements[0].borrow()
+    {
+        if let Expression::DictionaryLiteral { elements, .. } = &*init.borrow() {
+            assert_eq!(elements.len(), 1, "Expected 1 element");
+        } else {
+            panic!("Expected DictionaryLiteral");
+        }
+    } else {
+        panic!("Expected VariableDecl");
+    }
+}
+
+#[test]
+fn test_parse_dictionary_literal_multiple() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new("let x = [\"a\": 1, \"b\": 2, \"c\": 3]".to_string(), Rc::new("".to_string())),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    assert!(!engine.borrow().has_errors(), "Should parse multi-element dict without errors");
+    if let Statement::VariableDecl {
+        initializer: Some(init),
+        ..
+    } = &*program.statements[0].borrow()
+    {
+        if let Expression::DictionaryLiteral { elements, .. } = &*init.borrow() {
+            assert_eq!(elements.len(), 3, "Expected 3 elements");
+        } else {
+            panic!("Expected DictionaryLiteral");
+        }
+    } else {
+        panic!("Expected VariableDecl");
+    }
+}

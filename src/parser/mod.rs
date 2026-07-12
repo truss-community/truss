@@ -1017,6 +1017,34 @@ impl Parser {
                     self.index += 1;
                     let left = token;
 
+                    if let Some(t) = self.peek()
+                        && SeparatorType::is_separator(&t, SeparatorType::Colon)
+                    {
+                        self.index += 1;
+                        let Some(right) = self.next() else {
+                            self.emit_error(
+                                TrussDiagnosticCode::UnexpectedToken,
+                                "Expected ']' after '[:'",
+                                &left,
+                            );
+                            return Err(());
+                        };
+                        if !SeparatorType::is_separator(&right, SeparatorType::CloseBracket) {
+                            self.emit_error(
+                                TrussDiagnosticCode::UnexpectedToken,
+                                format!("Expected ']' but found '{}'", right.value),
+                                &right,
+                            );
+                            return Err(());
+                        }
+                        return Ok(Expression::DictionaryLiteral {
+                            left: Box::new(left),
+                            elements: Vec::new(),
+                            right: Box::new(right),
+                            ty: None,
+                        });
+                    }
+
                     let result = if let Some(t) = self.peek()
                         && !SeparatorType::is_separator(&t, SeparatorType::CloseBracket)
                     {
@@ -1717,6 +1745,61 @@ impl Parser {
         Ok(expression)
     }
 
+    fn parse_type_postfix(&mut self, mut type_expr: Expression) -> Result<Expression, ()> {
+        while let Some(token) = self.peek()
+            && OperatorType::is_operator(&token, OperatorType::Multiply)
+        {
+            self.index += 1;
+            let mut non_null = false;
+            if let Some(next) = self.peek()
+                && OperatorType::is_operator(&next, OperatorType::Not)
+            {
+                self.index += 1;
+                non_null = true;
+            }
+            type_expr = Expression::PointerType {
+                base: Box::new(Rc::new(RefCell::new(type_expr))),
+                non_null,
+                ty: None,
+            };
+        }
+
+        if let Some(token) = self.peek()
+            && OperatorType::is_operator(&token, OperatorType::QuestionMark)
+        {
+            self.index += 1;
+            type_expr = Expression::OptionalType {
+                inner: Rc::new(RefCell::new(type_expr)),
+                ty: None,
+            };
+        }
+
+        let mut types = vec![Rc::new(RefCell::new(type_expr))];
+        while let Some(token) = self.peek()
+            && OperatorType::is_operator(&token, OperatorType::BitAnd)
+        {
+            self.index += 1;
+            let right = self.parse_type_expression()?;
+            if let Expression::CompoundType {
+                types: inner_types, ..
+            } = right
+            {
+                types.extend(inner_types);
+            } else {
+                types.push(Rc::new(RefCell::new(right)));
+            }
+        }
+
+        if types.len() > 1 {
+            Ok(Expression::CompoundType { types, ty: None })
+        } else {
+            Ok(Rc::try_unwrap(types.into_iter().next().unwrap())
+                .ok()
+                .unwrap()
+                .into_inner())
+        }
+    }
+
     fn parse_type_expression(&mut self) -> Result<Expression, ()> {
         if let Some(token) = self.peek()
             && SeparatorType::is_separator(&token, SeparatorType::OpenBracket)
@@ -1745,11 +1828,13 @@ impl Parser {
                     );
                     return Err(());
                 }
-                return Ok(Expression::DictionaryType {
+                let mut type_expr = Expression::DictionaryType {
                     key: Rc::new(RefCell::new(first)),
                     value: Rc::new(RefCell::new(second)),
                     ty: None,
-                });
+                };
+                type_expr = self.parse_type_postfix(type_expr)?;
+                return Ok(type_expr);
             }
 
             let Some(close) = self.next() else {
@@ -1768,10 +1853,12 @@ impl Parser {
                 );
                 return Err(());
             }
-            return Ok(Expression::ArrayType {
+            let mut type_expr = Expression::ArrayType {
                 inner: Rc::new(RefCell::new(first)),
                 ty: None,
-            });
+            };
+            type_expr = self.parse_type_postfix(type_expr)?;
+            return Ok(type_expr);
         }
 
         if let Some(token) = self.peek()
