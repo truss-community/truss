@@ -3583,9 +3583,15 @@ impl<'ctx> IRGenerator<'ctx> {
                 let func = self.module.get_function(&fn_name).or_else(|| {
                     let mangled = self.mangle_fn_name(&base_name, &[]);
                     self.module.get_function(&mangled)
+                }).or_else(|| {
+                    // Cross-module: try the function's defining package mangled name
+                    if let Some(cross_name) = self.find_cross_module_fn_mangled(&owner, method_name) {
+                        self.module.get_function(&cross_name)
+                    } else {
+                        None
+                    }
                 });
                 if let Some(func) = func
-                    && func.get_first_basic_block().is_some()
                 {
                     let fn_ptr = func.as_global_value().as_pointer_value();
                     const_vals.push(fn_ptr.as_basic_value_enum());
@@ -13633,6 +13639,31 @@ impl<'ctx> IRGenerator<'ctx> {
                 let instantiation_ptr: Option<(BasicTypeEnum<'ctx>, PointerValue<'ctx>)> =
                     if is_init_call {
                         if let Some(ref struct_name) = callee_struct_name {
+                            // For cross-module classes not yet registered, resolve from scope
+                            if self.class_types.borrow().get(struct_name).is_none()
+                                && self.struct_types.borrow().get(struct_name).is_none()
+                            {
+                                let decl = self
+                                    .program_scope
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|scope| scope.borrow().get_symbol_deep(struct_name))
+                                    .and_then(|sym| {
+                                        let sym_b = sym.borrow();
+                                        match &*sym_b {
+                                            Symbol::Class { decl, .. } => Some(decl.clone()),
+                                            Symbol::Struct { decl, .. } => Some(decl.clone()),
+                                            _ => None,
+                                        }
+                                    });
+                                if let Some(d) = decl {
+                                    if self.class_types.borrow().get(struct_name).is_none() {
+                                        self.declare_class_types(d.clone());
+                                        self.create_class_type_bodies(d.clone());
+                                        self.create_vtable_instances(d);
+                                    }
+                                }
+                            }
                             if let Some(class_type) =
                                 self.class_types.borrow().get(struct_name).cloned()
                             {
@@ -13684,6 +13715,46 @@ impl<'ctx> IRGenerator<'ctx> {
                                         vtable_ptr_gep,
                                         vt_global.as_pointer_value(),
                                     )?;
+                                } else {
+                                    // Cross-module vtable: declare as extern
+                                    if let Some((vt_pkg, vt_mod)) = self
+                                        .program_scope
+                                        .borrow()
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().get_symbol_deep(struct_name))
+                                        .and_then(|sym| {
+                                            let sym_b = sym.borrow();
+                                            match &*sym_b {
+                                                Symbol::Class { decl, .. } => {
+                                                    let decl_b = decl.borrow();
+                                                    match &*decl_b {
+                                                        Statement::ClassDecl { scope, .. } => scope.as_ref().map(|s| {
+                                                            let (pkg, mn) = self.resolve_qualified_name_from_scope(s);
+                                                            (pkg, mn)
+                                                        }),
+                                                        _ => None,
+                                                    }
+                                                }
+                                                _ => None,
+                                            }
+                                        })
+                                    {
+                                        let vtable_global_name = Self::mangle_global_name(
+                                            &vt_pkg, &vt_mod, "__vtable", struct_name,
+                                        );
+                                        if self.module.get_global(&vtable_global_name).is_none() {
+                                            let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                            let arr_ty = ptr_ty.array_type(0);
+                                            let gv = self.module.add_global(arr_ty, None, &vtable_global_name);
+                                            gv.set_linkage(inkwell::module::Linkage::External);
+                                            self.vtable_globals.borrow_mut().insert(struct_name.clone(), gv);
+                                        }
+                                        if let Some(gv) = self.vtable_globals.borrow().get(struct_name).copied() {
+                                            let vtable_ptr_gep = self.builder
+                                                .build_struct_gep(class_type, class_ptr, 0, "")?;
+                                            self.builder.build_store(vtable_ptr_gep, gv.as_pointer_value())?;
+                                        }
+                                    }
                                 }
 
                                 let rc_ptr = self
