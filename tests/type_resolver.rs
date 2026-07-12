@@ -8446,3 +8446,87 @@ fn test_optional_chaining_non_optional_error() {
     );
     assert!(errors > 0, "optional chaining on non-Optional should error");
 }
+
+#[test]
+fn test_module_qualified_type_annotation() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "module Foo { struct Bar { var x: Int32 } } func test() -> Foo.Bar { return Foo.Bar(x: 0) }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _krate) = truss::krate::single_package_map("test");
+    let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = resolver.resolve(&program, "test".to_string());
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "module-qualified type annotation should resolve, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_module_qualified_optional_type() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "module Foo { struct Bar { var x: Int32 } } func test() -> Foo.Bar? { return null }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _krate) = truss::krate::single_package_map("test");
+    let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = resolver.resolve(&program, "test".to_string());
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "module-qualified optional type should resolve, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_nested_module_qualified_type() {
+    let engine = create_engine();
+    let mut lexer = Lexer::new(
+        CharStream::new(
+            "module Outer { module Inner { struct Data { var x: Int32 } } } func test() -> Outer.Inner.Data { return Outer.Inner.Data(x: 0) }".to_string(),
+            Rc::new("".to_string()),
+        ),
+        engine.clone(),
+    );
+    let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
+    let program = parser.parse();
+    let (packages, _krate) = truss::krate::single_package_map("test");
+    let mut resolver = SymbolResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    let root_module = resolver.resolve(&program, "test".to_string());
+    let (packages, _) = truss::krate::single_package_map("test");
+    let mut type_resolver = TypeResolver::new(packages.clone(), "test".to_string(), engine.clone());
+    type_resolver.resolve(&program, root_module);
+    let binding = engine.borrow();
+    let errors = binding.get_errors();
+    assert_eq!(
+        errors.len(),
+        0,
+        "nested module-qualified type should resolve, got: {:?}",
+        errors
+    );
+}

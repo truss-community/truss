@@ -3549,10 +3549,14 @@ impl TypeResolver {
                         *call_ty = Some(resolved_ret_ty.clone());
                         resolved_ret_ty
                     }
-                    Type::Struct(struct_name, ..) => {
+                    Type::Struct(struct_name, weak_sym, ..) => {
                         let (init_params_info, is_failable_init) = {
-                            let scope = self.current_scope.as_ref().unwrap().borrow();
-                            if let Some(symbol) = scope.get_symbol(struct_name)
+                            let symbol_opt = {
+                                let scope = self.current_scope.as_ref().unwrap().borrow();
+                                weak_sym.0.upgrade()
+                                    .or_else(|| scope.get_symbol_qualified(struct_name))
+                            };
+                            if let Some(symbol) = symbol_opt
                                 && let Symbol::Struct { constructors, .. } = &*symbol.borrow()
                             {
                                 let mut found_failable = false;
@@ -6013,6 +6017,9 @@ impl TypeResolver {
                 }
             }
             Expression::AssociatedTypeAccess { object, member, ty } => {
+                if let Some(result) = self.try_module_qualified_type(object.clone(), member, ty) {
+                    return Some(result);
+                }
                 let object_ty = self.infer_type(object.clone());
                 let object_ty = match object_ty {
                     Some(t) => t,
@@ -10786,6 +10793,86 @@ impl TypeResolver {
             }
             _ => None,
         }
+    }
+
+    fn find_module_from_type_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<(Rc<RefCell<Module>>, String)> {
+        match expr {
+            Expression::Type { name, .. } => {
+                let scope = self.current_scope.as_ref()?;
+                let sym = scope.borrow().get_symbol(&name.value)?;
+                let binding = sym.borrow();
+                if let Symbol::Module { name, module, .. } = &*binding {
+                    Some((module.clone()?, name.clone()))
+                } else {
+                    None
+                }
+            }
+            Expression::AssociatedTypeAccess { object, member, .. } => {
+                let obj = object.borrow();
+                let (parent_module, parent_path) = self.find_module_from_type_expr(&obj)?;
+                let scope = parent_module.borrow().scope.clone()?;
+                let sym = scope.borrow().get_symbol(&member.value)?;
+                let binding = sym.borrow();
+                if let Symbol::Module { module, name, .. } = &*binding {
+                    let path = format!("{}.{}", parent_path, name);
+                    Some((module.clone()?, path))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn try_module_qualified_type(
+        &mut self,
+        object: Rc<RefCell<Expression>>,
+        member: &Token,
+        ty: &mut Option<Rc<RefCell<Type>>>,
+    ) -> Option<Rc<RefCell<Type>>> {
+        let (module, prefix_path) = self.find_module_from_type_expr(&object.borrow())?;
+        let scope = module.borrow().scope.clone()?;
+        let scope_ref = scope.borrow();
+
+        if let Some(sym) = scope_ref.get_symbol(&member.value) {
+            let binding = sym.borrow();
+            if let Symbol::Module { .. } = &*binding {
+                return None;
+            }
+            let decl = binding.get_decl().ok()??;
+            drop(binding);
+
+            let member_type = {
+                let decl_ref = decl.borrow();
+                match &*decl_ref {
+                    Statement::StructDecl { name, .. }
+                    | Statement::ClassDecl { name, .. }
+                    | Statement::EnumDecl { name, .. } => {
+                        scope_ref.get_type(&name.value).map(|t| {
+                            let q = format!("{}.{}", prefix_path, name.value);
+                            Rc::new(RefCell::new(match &*t.borrow() {
+                                Type::Class(_, ws, tp) => Type::Class(q, ws.clone(), tp.clone()),
+                                Type::Struct(_, ws, tp) => Type::Struct(q, ws.clone(), tp.clone()),
+                                Type::Enum(_, ws, tp) => Type::Enum(q, ws.clone(), tp.clone()),
+                                other => other.clone(),
+                            }))
+                        })
+                    }
+                    _ => None,
+                }
+            };
+            drop(scope_ref);
+            drop(scope);
+
+            if let Some(t) = member_type {
+                *ty = Some(t.clone());
+                return Some(t);
+            }
+        }
+        None
     }
 
     fn find_module_path_from_expr(&self, expr: &Expression) -> Option<(Rc<RefCell<Module>>, String)> {
