@@ -113,6 +113,10 @@ impl SymbolResolver {
         }
 
         for stmt in &program.statements {
+            self.register_module_prepass(stmt.clone());
+        }
+
+        for stmt in &program.statements {
             self.register_symbols(stmt.clone());
         }
 
@@ -123,6 +127,60 @@ impl SymbolResolver {
         }
         self.leave_scope();
         module
+    }
+
+    fn register_module_prepass(&mut self, stmt: Rc<RefCell<Statement>>) {
+        match &mut *stmt.borrow_mut() {
+            Statement::ModuleDecl {
+                name, body, scope, ..
+            } => {
+                let full_path = {
+                    let parent = self
+                        .current_module
+                        .as_ref()
+                        .map(|m| m.borrow().name.clone());
+                    match parent {
+                        Some(ref p) => format!("{}.{}", p, name.value),
+                        None => format!("{}.{}", self.current_package, name.value),
+                    }
+                };
+                let module = {
+                    let pkg = self.packages.get(&self.current_package).unwrap();
+                    if let Some(existing) = pkg.borrow().modules.get(&full_path).cloned() {
+                        existing
+                    } else {
+                        let new_module = Rc::new(RefCell::new(Module::new(full_path.clone())));
+                        pkg.borrow_mut()
+                            .modules
+                            .insert(full_path.clone(), new_module.clone());
+                        new_module
+                    }
+                };
+                if let Some(current) = &self.current_module {
+                    current
+                        .borrow_mut()
+                        .children
+                        .insert(name.value.clone(), module.clone());
+                }
+
+                let saved_scope = self.current_scope.clone();
+                if scope.is_none() {
+                    *scope = Some(self.enter_scope(None));
+                    module.borrow_mut().scope = scope.clone();
+                } else {
+                    self.current_scope = scope.clone();
+                }
+                scope.as_ref().unwrap().borrow_mut().module_name = Some(full_path);
+
+                let saved_module = self.current_module.replace(module);
+                for s in body {
+                    self.register_module_prepass(s.clone());
+                }
+                self.current_scope = saved_scope;
+                self.current_module = saved_module;
+            }
+            _ => {}
+        }
     }
 
     pub fn register_symbols(&mut self, stmt: Rc<RefCell<Statement>>) {
@@ -1255,16 +1313,21 @@ impl SymbolResolver {
                         .map(|m| m.borrow().name.clone());
                     match parent {
                         Some(ref p) => format!("{}.{}", p, name.value),
-                        None => name.value.clone(),
+                        None => format!("{}.{}", self.current_package, name.value),
                     }
                 };
-                let module = Rc::new(RefCell::new(Module::new(full_path.clone())));
-                self.packages
-                    .get(&self.current_package)
-                    .unwrap()
-                    .borrow_mut()
-                    .modules
-                    .insert(full_path.clone(), module.clone());
+                let module = {
+                    let pkg = self.packages.get(&self.current_package).unwrap();
+                    if let Some(existing) = pkg.borrow().modules.get(&full_path).cloned() {
+                        existing
+                    } else {
+                        let new_module = Rc::new(RefCell::new(Module::new(full_path.clone())));
+                        pkg.borrow_mut()
+                            .modules
+                            .insert(full_path.clone(), new_module.clone());
+                        new_module
+                    }
+                };
                 if let Some(current) = &self.current_module {
                     current
                         .borrow_mut()
@@ -1279,611 +1342,23 @@ impl SymbolResolver {
                 }));
                 self.enter(module_symbol, name);
 
-                *scope = Some(self.enter_scope(None));
-                module.borrow_mut().scope = scope.clone();
+                let saved_scope = self.current_scope.clone();
+                if scope.is_none() {
+                    *scope = Some(self.enter_scope(None));
+                    module.borrow_mut().scope = scope.clone();
+                } else {
+                    self.current_scope = scope.clone();
+                }
                 scope.as_ref().unwrap().borrow_mut().module_name = Some(full_path);
 
                 let saved_module = self.current_module.replace(module);
                 for s in body {
                     self.register_symbols(s.clone());
                 }
-                self.leave_scope();
+                self.current_scope = saved_scope;
                 self.current_module = saved_module;
             }
-            Statement::ImportDecl {
-                path,
-                kind,
-                token,
-                selective_members,
-                is_current_package,
-            } => {
-                let resolve_module =
-                    |pkg: &Rc<RefCell<Package>>, mp: &str| -> Option<Rc<RefCell<Module>>> {
-                        pkg.borrow().modules.get(mp).cloned()
-                    };
-                if let Some(members) = selective_members {
-                    let module_path = if *is_current_package {
-                        format!("{}.{}", self.current_package, path.join("."))
-                    } else {
-                        path.join(".")
-                    };
-                    let target_pkg = if *is_current_package {
-                        self.packages.get(&self.current_package).cloned()
-                    } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
-                        self.packages.get(&path[0]).cloned()
-                    } else {
-                        self.packages.get(&self.current_package).cloned()
-                    };
-                    let module = target_pkg
-                        .as_ref()
-                        .and_then(|p| resolve_module(p, &module_path));
-                    if let Some(module) = module {
-                        for member in members {
-                            if member.name == "self"
-                                && matches!(member.alias, SelectiveAlias::Direct)
-                            {
-                                let self_name =
-                                    path.last().cloned().unwrap_or_else(|| module_path.clone());
-                                let module_symbol = Rc::new(RefCell::new(Symbol::Module {
-                                    name: self_name.clone(),
-                                    decl: stmt.clone(),
-                                    module: Some(module.clone()),
-                                }));
-                                let self_token = Token::new(
-                                    self_name,
-                                    crate::lexer::token::TokenType::Identifier,
-                                    token.position.clone(),
-                                    token.file.clone(),
-                                );
-                                self.enter(module_symbol, &self_token);
-                                continue;
-                            }
-                            if let Some(dot_pos) = member.name.rfind('.') {
-                                let sub_module_path = &member.name[..dot_pos];
-                                let sub_member_name = &member.name[dot_pos + 1..];
-                                let mut current_module = Some(module.clone());
-                                for segment in sub_module_path.split('.') {
-                                    current_module = current_module
-                                        .and_then(|m| m.borrow().children.get(segment).cloned());
-                                }
-                                if let Some(target_module) = current_module {
-                                    if let Some(sym) = target_module
-                                        .borrow()
-                                        .scope
-                                        .clone()
-                                        .and_then(|s| s.borrow().get_symbol(sub_member_name))
-                                    {
-                                        let alias_name = match &member.alias {
-                                            SelectiveAlias::Direct => sub_member_name,
-                                            SelectiveAlias::Named(alias) => alias,
-                                            SelectiveAlias::Skip => continue,
-                                        };
-                                        let alias_token = Token::new(
-                                            alias_name.to_string(),
-                                            crate::lexer::token::TokenType::Identifier,
-                                            token.position.clone(),
-                                            token.file.clone(),
-                                        );
-                                        if alias_name != sub_member_name {
-                                            let renamed = Rc::new(RefCell::new(
-                                                sym.borrow().with_name(alias_name),
-                                            ));
-                                            self.enter(renamed, &alias_token);
-                                        } else {
-                                            self.enter(sym, &alias_token);
-                                        }
-                                    } else {
-                                        self.emit_error(
-                                            TrussDiagnosticCode::SymbolError,
-                                            format!(
-                                                "Symbol '{}' not found in module '{}'",
-                                                sub_member_name, sub_module_path
-                                            ),
-                                            token.as_ref(),
-                                        );
-                                    }
-                                } else {
-                                    self.emit_error(
-                                        TrussDiagnosticCode::SymbolError,
-                                        format!(
-                                            "Module '{}' not found in '{}'",
-                                            sub_module_path, module_path
-                                        ),
-                                        token.as_ref(),
-                                    );
-                                }
-                                continue;
-                            }
-                            if let Some(ref sub_members) = member.members {
-                                let sub_module =
-                                    module.borrow().children.get(&member.name).cloned().or_else(
-                                        || {
-                                            module
-                                                .borrow()
-                                                .scope
-                                                .clone()
-                                                .and_then(|scope| {
-                                                    scope.borrow().get_symbol(&member.name)
-                                                })
-                                                .and_then(|sym| {
-                                                    if let Symbol::Module {
-                                                        module: Some(m), ..
-                                                    } = &*sym.borrow()
-                                                    {
-                                                        Some(m.clone())
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                        },
-                                    );
-                                if let Some(ref sub_module) = sub_module {
-                                    for sub_member in sub_members {
-                                        let sub_name_token = Token::new(
-                                            sub_member.name.clone(),
-                                            crate::lexer::token::TokenType::Identifier,
-                                            token.position.clone(),
-                                            token.file.clone(),
-                                        );
-                                        if sub_member.name == "self"
-                                            && matches!(sub_member.alias, SelectiveAlias::Direct)
-                                        {
-                                            let self_name = member.name.clone();
-                                            let module_symbol =
-                                                Rc::new(RefCell::new(Symbol::Module {
-                                                    name: self_name.clone(),
-                                                    decl: stmt.clone(),
-                                                    module: Some(sub_module.clone()),
-                                                }));
-                                            let self_token = Token::new(
-                                                self_name,
-                                                crate::lexer::token::TokenType::Identifier,
-                                                token.position.clone(),
-                                                token.file.clone(),
-                                            );
-                                            self.enter(module_symbol, &self_token);
-                                            continue;
-                                        }
-                                        if let Some(dot_pos) = sub_member.name.rfind('.') {
-                                            let sub_path = &sub_member.name[..dot_pos];
-                                            let sub_name = &sub_member.name[dot_pos + 1..];
-                                            let mut cur = Some(sub_module.clone());
-                                            for seg in sub_path.split('.') {
-                                                cur = cur.and_then(|m| {
-                                                    m.borrow().children.get(seg).cloned()
-                                                });
-                                            }
-                                            if let Some(tm) = cur {
-                                                if let Some(sym) =
-                                                    tm.borrow().scope.clone().and_then(|s| {
-                                                        s.borrow().get_symbol(sub_name)
-                                                    })
-                                                {
-                                                    let alias_name = match &sub_member.alias {
-                                                        SelectiveAlias::Direct => sub_name,
-                                                        SelectiveAlias::Named(alias) => alias,
-                                                        SelectiveAlias::Skip => continue,
-                                                    };
-                                                    let at = Token::new(
-                                                        alias_name.to_string(),
-                                                        crate::lexer::token::TokenType::Identifier,
-                                                        token.position.clone(),
-                                                        token.file.clone(),
-                                                    );
-                                                    if alias_name != sub_name {
-                                                        self.enter(
-                                                            Rc::new(RefCell::new(
-                                                                sym.borrow().with_name(alias_name),
-                                                            )),
-                                                            &at,
-                                                        );
-                                                    } else {
-                                                        self.enter(sym, &at);
-                                                    }
-                                                } else {
-                                                    self.emit_error(
-                                                        TrussDiagnosticCode::SymbolError,
-                                                        format!(
-                                                            "Symbol '{}' not found in module '{}'",
-                                                            sub_name, sub_path
-                                                        ),
-                                                        token.as_ref(),
-                                                    );
-                                                }
-                                            }
-                                            continue;
-                                        }
-                                        if let Some(ref nested_sub) = sub_member.members {
-                                            let deeper = sub_module
-                                                .borrow()
-                                                .children
-                                                .get(&sub_member.name)
-                                                .cloned()
-                                                .or_else(|| {
-                                                    sub_module
-                                                        .borrow()
-                                                        .scope
-                                                        .clone()
-                                                        .and_then(|scope| {
-                                                            scope
-                                                                .borrow()
-                                                                .get_symbol(&sub_member.name)
-                                                        })
-                                                        .and_then(|sym| {
-                                                            if let Symbol::Module {
-                                                                module: Some(m),
-                                                                ..
-                                                            } = &*sym.borrow()
-                                                            {
-                                                                Some(m.clone())
-                                                            } else {
-                                                                None
-                                                            }
-                                                        })
-                                                });
-                                            if let Some(ref deeper_module) = deeper {
-                                                for ds in nested_sub {
-                                                    if ds.name == "self"
-                                                        && matches!(
-                                                            ds.alias,
-                                                            SelectiveAlias::Direct
-                                                        )
-                                                    {
-                                                        let ms =
-                                                            Rc::new(RefCell::new(Symbol::Module {
-                                                                name: sub_member.name.clone(),
-                                                                decl: stmt.clone(),
-                                                                module: Some(deeper_module.clone()),
-                                                            }));
-                                                        self.enter(ms, &sub_name_token);
-                                                        continue;
-                                                    }
-                                                    if let Some(sym) = deeper_module
-                                                        .borrow()
-                                                        .scope
-                                                        .clone()
-                                                        .and_then(|s| {
-                                                            s.borrow().get_symbol(&ds.name)
-                                                        })
-                                                    {
-                                                        let an = match &ds.alias {
-                                                            SelectiveAlias::Direct => &ds.name,
-                                                            SelectiveAlias::Named(a) => a,
-                                                            SelectiveAlias::Skip => continue,
-                                                        };
-                                                        let at = Token::new(an.clone(), crate::lexer::token::TokenType::Identifier, token.position.clone(), token.file.clone());
-                                                        if an != &ds.name {
-                                                            self.enter(
-                                                                Rc::new(RefCell::new(
-                                                                    sym.borrow().with_name(an),
-                                                                )),
-                                                                &at,
-                                                            );
-                                                        } else {
-                                                            self.enter(sym, &at);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            continue;
-                                        }
-                                        let found_sym =
-                                            sub_module.borrow().scope.clone().and_then(|s| {
-                                                s.borrow().get_symbol(&sub_member.name)
-                                            });
-                                        if let Some(sym) = found_sym {
-                                            let alias_name = match &sub_member.alias {
-                                                SelectiveAlias::Direct => &sub_member.name,
-                                                SelectiveAlias::Named(alias) => alias,
-                                                SelectiveAlias::Skip => continue,
-                                            };
-                                            let alias_tok = Token::new(
-                                                alias_name.clone(),
-                                                crate::lexer::token::TokenType::Identifier,
-                                                token.position.clone(),
-                                                token.file.clone(),
-                                            );
-                                            if alias_name != &sub_member.name {
-                                                self.enter(
-                                                    Rc::new(RefCell::new(
-                                                        sym.borrow().with_name(alias_name),
-                                                    )),
-                                                    &alias_tok,
-                                                );
-                                            } else {
-                                                self.enter(sym, &alias_tok);
-                                            }
-                                        } else {
-                                            self.emit_error(
-                                                TrussDiagnosticCode::SymbolError,
-                                                format!(
-                                                    "Symbol '{}' not found in module '{}'",
-                                                    sub_member.name, member.name
-                                                ),
-                                                token.as_ref(),
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    self.emit_error(
-                                        TrussDiagnosticCode::SymbolError,
-                                        format!(
-                                            "Module '{}' not found in '{}'",
-                                            member.name, module_path
-                                        ),
-                                        token.as_ref(),
-                                    );
-                                }
-                                continue;
-                            }
-                            let found_symbol = module
-                                .borrow()
-                                .scope
-                                .clone()
-                                .and_then(|scope| scope.borrow().get_symbol(&member.name));
-                            if let Some(symbol) = found_symbol {
-                                let alias_name = match &member.alias {
-                                    SelectiveAlias::Direct => &member.name,
-                                    SelectiveAlias::Named(alias) => alias,
-                                    SelectiveAlias::Skip => continue,
-                                };
-                                let name_token = Token::new(
-                                    alias_name.clone(),
-                                    crate::lexer::token::TokenType::Identifier,
-                                    token.position.clone(),
-                                    token.file.clone(),
-                                );
-                                if alias_name != &member.name {
-                                    let renamed = Rc::new(RefCell::new(
-                                        symbol.borrow().with_name(alias_name),
-                                    ));
-                                    self.enter(renamed, &name_token);
-                                } else {
-                                    self.enter(symbol, &name_token);
-                                }
-                            } else {
-                                self.emit_error(
-                                    TrussDiagnosticCode::SymbolError,
-                                    format!(
-                                        "Symbol '{}' not found in module '{}'",
-                                        member.name, module_path
-                                    ),
-                                    token.as_ref(),
-                                );
-                            }
-                        }
-                    } else {
-                        self.emit_error(
-                            TrussDiagnosticCode::SymbolError,
-                            format!("Module '{}' not found", module_path),
-                            token.as_ref(),
-                        );
-                    }
-                } else {
-                    match kind {
-                        ImportKind::Module => {
-                            let module_path = if *is_current_package {
-                                format!("{}.{}", self.current_package, path.join("."))
-                            } else {
-                                path.join(".")
-                            };
-                            let target_pkg = if *is_current_package {
-                                self.packages.get(&self.current_package).cloned()
-                            } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
-                                self.packages.get(&path[0]).cloned()
-                            } else {
-                                self.packages.get(&self.current_package).cloned()
-                            };
-                            let module = target_pkg
-                                .as_ref()
-                                .and_then(|p| resolve_module(p, &module_path));
-                            if let Some(module) = module {
-                                let name = path.last().unwrap().clone();
-                                let is_package = !*is_current_package
-                                    && path.len() >= 1
-                                    && self.packages.contains_key(&path[0]);
-                                let module_symbol = Rc::new(RefCell::new(if is_package {
-                                    Symbol::Package {
-                                        name: name.clone(),
-                                        decl: stmt.clone(),
-                                        module: Some(module),
-                                    }
-                                } else {
-                                    Symbol::Module {
-                                        name: name.clone(),
-                                        decl: stmt.clone(),
-                                        module: Some(module),
-                                    }
-                                }));
-                                let name_token = Token::new(
-                                    name,
-                                    crate::lexer::token::TokenType::Identifier,
-                                    token.position.clone(),
-                                    token.file.clone(),
-                                );
-                                self.enter(module_symbol, &name_token);
-                                if let Some(scope) = self.current_scope.as_ref() {
-                                    scope.borrow_mut().imported_names.insert(name_token.value.clone());
-                                }
-                            } else if path.len() == 2
-                                && !*is_current_package
-                                && self.packages.contains_key(&path[0])
-                            {
-                                let member_name = path[1].clone();
-                                let mod_path = path[0].clone();
-                                let found = target_pkg.as_ref().and_then(|p| {
-                                    p.borrow().modules.get(&mod_path).and_then(|m| {
-                                        m.borrow().scope.clone().and_then(|scope| {
-                                            scope.borrow().get_symbol(&member_name)
-                                        })
-                                    })
-                                });
-                                if let Some(sym) = found {
-                                    let name_token = Token::new(
-                                        member_name.clone(),
-                                        crate::lexer::token::TokenType::Identifier,
-                                        token.position.clone(),
-                                        token.file.clone(),
-                                    );
-                                    self.enter(sym, &name_token);
-                                    if let Some(scope) = self.current_scope.as_ref() {
-                                        scope.borrow_mut().imported_names.insert(member_name);
-                                    }
-                                } else {
-                                    self.emit_error(
-                                        TrussDiagnosticCode::SymbolError,
-                                        format!(
-                                            "Symbol '{}' not found in module '{}'",
-                                            member_name, mod_path
-                                        ),
-                                        token.as_ref(),
-                                    );
-                                }
-                            } else {
-                                self.emit_error(
-                                    TrussDiagnosticCode::SymbolError,
-                                    format!("Module '{}' not found", module_path),
-                                    token.as_ref(),
-                                );
-                            }
-                        }
-                        ImportKind::Member => {
-                            let member_name = path.last().unwrap().clone();
-                            let module_path = if *is_current_package {
-                                format!(
-                                    "{}.{}",
-                                    self.current_package,
-                                    path[..path.len() - 1].join(".")
-                                )
-                            } else {
-                                path[..path.len() - 1].join(".")
-                            };
-                            let target_pkg = if *is_current_package {
-                                self.packages.get(&self.current_package).cloned()
-                            } else if path.len() >= 2 && self.packages.contains_key(&path[0]) {
-                                self.packages.get(&path[0]).cloned()
-                            } else {
-                                self.packages.get(&self.current_package).cloned()
-                            };
-                            let found_symbol = target_pkg.as_ref().and_then(|p| {
-                                p.borrow().modules.get(&module_path).and_then(|m| {
-                                    m.borrow()
-                                        .scope
-                                        .clone()
-                                        .and_then(|scope| scope.borrow().get_symbol(&member_name))
-                                })
-                            });
-                            if let Some(symbol) = found_symbol {
-                                self.enter(symbol, token.as_ref());
-                                if let Some(scope) = self.current_scope.as_ref() {
-                                    scope.borrow_mut().imported_names.insert(member_name.clone());
-                                }
-                            } else {
-                                self.emit_error(
-                                    TrussDiagnosticCode::SymbolError,
-                                    format!("Symbol '{}' not found", member_name),
-                                    token.as_ref(),
-                                );
-                            }
-                        }
-                        ImportKind::Wildcard => {
-                            let module_path = if *is_current_package {
-                                format!("{}.{}", self.current_package, path.join("."))
-                            } else {
-                                path.join(".")
-                            };
-                            let target_pkg = if *is_current_package {
-                                self.packages.get(&self.current_package).cloned()
-                            } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
-                                self.packages.get(&path[0]).cloned()
-                            } else {
-                                self.packages.get(&self.current_package).cloned()
-                            };
-                            let module = target_pkg
-                                .as_ref()
-                                .and_then(|p| resolve_module(p, &module_path));
-                            if let Some(module) = module {
-                                let (names, type_names, target_scope) = {
-                                    let scope = module.borrow().scope.clone();
-                                    let (names, type_names) = {
-                                        let s = scope.as_ref().map(|s| s.borrow());
-                                        let names = s
-                                            .as_ref()
-                                            .map(|s| s.name_table.keys().cloned().collect::<Vec<_>>())
-                                            .unwrap_or_default();
-                                        let type_names = s
-                                            .as_ref()
-                                            .map(|s| s.type_env.keys().cloned().collect::<Vec<_>>())
-                                            .unwrap_or_default();
-                                        (names, type_names)
-                                    };
-                                    (names, type_names, scope)
-                                };
-                                for name in &names {
-                                    if let Some(ref ts) = target_scope {
-                                        if ts.borrow().imported_names.contains(name) {
-                                            continue;
-                                        }
-                                    }
-                                    if let Some(symbol) = target_scope
-                                        .as_ref()
-                                        .and_then(|scope| scope.borrow().get_symbol(name))
-                                    {
-                                        let name_token = Token::new(
-                                            name.clone(),
-                                            crate::lexer::token::TokenType::Identifier,
-                                            token.position.clone(),
-                                            token.file.clone(),
-                                        );
-                                        self.enter(symbol, &name_token);
-                                        if let Some(scope) = self.current_scope.as_ref() {
-                                            scope.borrow_mut().imported_names.insert(name.clone());
-                                        }
-                                    }
-                                    if let Some(ty) = target_scope
-                                        .as_ref()
-                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
-                                    {
-                                        if let Some(scope) = self.current_scope.as_ref() {
-                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
-                                        }
-                                    }
-                                }
-                                for name in &type_names {
-                                    if names.contains(name) {
-                                        continue;
-                                    }
-                                    if let Some(ref ts) = target_scope {
-                                        if ts.borrow().imported_names.contains(name) {
-                                            continue;
-                                        }
-                                    }
-                                    if self.current_scope.as_ref().is_some_and(|scope| {
-                                        scope.borrow().type_env.contains_key(name)
-                                    }) {
-                                        continue;
-                                    }
-                                    if let Some(ty) = target_scope
-                                        .as_ref()
-                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
-                                    {
-                                        if let Some(scope) = self.current_scope.as_ref() {
-                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
-                                            scope.borrow_mut().imported_names.insert(name.clone());
-                                        }
-                                    }
-                                }
-                            } else {
-                                self.emit_error(
-                                    TrussDiagnosticCode::SymbolError,
-                                    format!("Module '{}' not found", module_path),
-                                    token.as_ref(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            Statement::ImportDecl { .. } => {}
             Statement::MacroDecl { name, .. } => {
                 let symbol = Rc::new(RefCell::new(Symbol::Macro {
                     name: name.value.clone(),
@@ -2923,6 +2398,600 @@ impl SymbolResolver {
                     self.resolve_statement(stmt.clone());
                 }
                 self.leave_scope();
+            }
+            Statement::ImportDecl {
+                path,
+                kind,
+                token,
+                selective_members,
+                is_current_package,
+            } => {
+                let resolve_module =
+                    |pkg: &Rc<RefCell<Package>>, mp: &str| -> Option<Rc<RefCell<Module>>> {
+                        pkg.borrow().modules.get(mp).cloned()
+                    };
+                if let Some(members) = selective_members {
+                    let module_path = if *is_current_package {
+                        format!("{}.{}", self.current_package, path.join("."))
+                    } else {
+                        path.join(".")
+                    };
+                    let target_pkg = if *is_current_package {
+                        self.packages.get(&self.current_package).cloned()
+                    } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
+                        self.packages.get(&path[0]).cloned()
+                    } else {
+                        self.packages.get(&self.current_package).cloned()
+                    };
+                    let module = target_pkg
+                        .as_ref()
+                        .and_then(|p| resolve_module(p, &module_path));
+                    if let Some(module) = module {
+                        for member in members {
+                            if member.name == "self"
+                                && matches!(member.alias, SelectiveAlias::Direct)
+                            {
+                                let self_name =
+                                    path.last().cloned().unwrap_or_else(|| module_path.clone());
+                                let module_symbol = Rc::new(RefCell::new(Symbol::Module {
+                                    name: self_name.clone(),
+                                    decl: stmt.clone(),
+                                    module: Some(module.clone()),
+                                }));
+                                let self_token = Token::new(
+                                    self_name,
+                                    crate::lexer::token::TokenType::Identifier,
+                                    token.position.clone(),
+                                    token.file.clone(),
+                                );
+                                self.enter(module_symbol, &self_token);
+                                continue;
+                            }
+                            if let Some(dot_pos) = member.name.rfind('.') {
+                                let sub_module_path = &member.name[..dot_pos];
+                                let sub_member_name = &member.name[dot_pos + 1..];
+                                let mut current_module = Some(module.clone());
+                                for segment in sub_module_path.split('.') {
+                                    current_module = current_module
+                                        .and_then(|m| m.borrow().children.get(segment).cloned());
+                                }
+                                if let Some(target_module) = current_module {
+                                    if let Some(sym) = target_module
+                                        .borrow()
+                                        .scope
+                                        .clone()
+                                        .and_then(|s| s.borrow().get_symbol(sub_member_name))
+                                    {
+                                        let alias_name = match &member.alias {
+                                            SelectiveAlias::Direct => sub_member_name,
+                                            SelectiveAlias::Named(alias) => alias,
+                                            SelectiveAlias::Skip => continue,
+                                        };
+                                        let alias_token = Token::new(
+                                            alias_name.to_string(),
+                                            crate::lexer::token::TokenType::Identifier,
+                                            token.position.clone(),
+                                            token.file.clone(),
+                                        );
+                                        if alias_name != sub_member_name {
+                                            let renamed = Rc::new(RefCell::new(
+                                                sym.borrow().with_name(alias_name),
+                                            ));
+                                            self.enter(renamed, &alias_token);
+                                        } else {
+                                            self.enter(sym, &alias_token);
+                                        }
+                                    } else {
+                                        self.emit_error(
+                                            TrussDiagnosticCode::SymbolError,
+                                            format!(
+                                                "Symbol '{}' not found in module '{}'",
+                                                sub_member_name, sub_module_path
+                                            ),
+                                            token.as_ref(),
+                                        );
+                                    }
+                                } else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::SymbolError,
+                                        format!(
+                                            "Module '{}' not found in '{}'",
+                                            sub_module_path, module_path
+                                        ),
+                                        token.as_ref(),
+                                    );
+                                }
+                                continue;
+                            }
+                            if let Some(ref sub_members) = member.members {
+                                let sub_module =
+                                    module.borrow().children.get(&member.name).cloned().or_else(
+                                        || {
+                                            module
+                                                .borrow()
+                                                .scope
+                                                .clone()
+                                                .and_then(|scope| {
+                                                    scope.borrow().get_symbol(&member.name)
+                                                })
+                                                .and_then(|sym| {
+                                                    if let Symbol::Module {
+                                                        module: Some(m), ..
+                                                    } = &*sym.borrow()
+                                                    {
+                                                        Some(m.clone())
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                        },
+                                    );
+                                if let Some(ref sub_module) = sub_module {
+                                    for sub_member in sub_members {
+                                        let sub_name_token = Token::new(
+                                            sub_member.name.clone(),
+                                            crate::lexer::token::TokenType::Identifier,
+                                            token.position.clone(),
+                                            token.file.clone(),
+                                        );
+                                        if sub_member.name == "self"
+                                            && matches!(sub_member.alias, SelectiveAlias::Direct)
+                                        {
+                                            let self_name = member.name.clone();
+                                            let module_symbol =
+                                                Rc::new(RefCell::new(Symbol::Module {
+                                                    name: self_name.clone(),
+                                                    decl: stmt.clone(),
+                                                    module: Some(sub_module.clone()),
+                                                }));
+                                            let self_token = Token::new(
+                                                self_name,
+                                                crate::lexer::token::TokenType::Identifier,
+                                                token.position.clone(),
+                                                token.file.clone(),
+                                            );
+                                            self.enter(module_symbol, &self_token);
+                                            continue;
+                                        }
+                                        if let Some(dot_pos) = sub_member.name.rfind('.') {
+                                            let sub_path = &sub_member.name[..dot_pos];
+                                            let sub_name = &sub_member.name[dot_pos + 1..];
+                                            let mut cur = Some(sub_module.clone());
+                                            for seg in sub_path.split('.') {
+                                                cur = cur.and_then(|m| {
+                                                    m.borrow().children.get(seg).cloned()
+                                                });
+                                            }
+                                            if let Some(tm) = cur {
+                                                if let Some(sym) =
+                                                    tm.borrow().scope.clone().and_then(|s| {
+                                                        s.borrow().get_symbol(sub_name)
+                                                    })
+                                                {
+                                                    let alias_name = match &sub_member.alias {
+                                                        SelectiveAlias::Direct => sub_name,
+                                                        SelectiveAlias::Named(alias) => alias,
+                                                        SelectiveAlias::Skip => continue,
+                                                    };
+                                                    let at = Token::new(
+                                                        alias_name.to_string(),
+                                                        crate::lexer::token::TokenType::Identifier,
+                                                        token.position.clone(),
+                                                        token.file.clone(),
+                                                    );
+                                                    if alias_name != sub_name {
+                                                        self.enter(
+                                                            Rc::new(RefCell::new(
+                                                                sym.borrow().with_name(alias_name),
+                                                            )),
+                                                            &at,
+                                                        );
+                                                    } else {
+                                                        self.enter(sym, &at);
+                                                    }
+                                                } else {
+                                                    self.emit_error(
+                                                        TrussDiagnosticCode::SymbolError,
+                                                        format!(
+                                                            "Symbol '{}' not found in module '{}'",
+                                                            sub_name, sub_path
+                                                        ),
+                                                        token.as_ref(),
+                                                    );
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                        if let Some(ref nested_sub) = sub_member.members {
+                                            let deeper = sub_module
+                                                .borrow()
+                                                .children
+                                                .get(&sub_member.name)
+                                                .cloned()
+                                                .or_else(|| {
+                                                    sub_module
+                                                        .borrow()
+                                                        .scope
+                                                        .clone()
+                                                        .and_then(|scope| {
+                                                            scope
+                                                                .borrow()
+                                                                .get_symbol(&sub_member.name)
+                                                        })
+                                                        .and_then(|sym| {
+                                                            if let Symbol::Module {
+                                                                module: Some(m),
+                                                                ..
+                                                            } = &*sym.borrow()
+                                                            {
+                                                                Some(m.clone())
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                });
+                                            if let Some(ref deeper_module) = deeper {
+                                                for ds in nested_sub {
+                                                    if ds.name == "self"
+                                                        && matches!(
+                                                            ds.alias,
+                                                            SelectiveAlias::Direct
+                                                        )
+                                                    {
+                                                        let ms =
+                                                            Rc::new(RefCell::new(Symbol::Module {
+                                                                name: sub_member.name.clone(),
+                                                                decl: stmt.clone(),
+                                                                module: Some(deeper_module.clone()),
+                                                            }));
+                                                        self.enter(ms, &sub_name_token);
+                                                        continue;
+                                                    }
+                                                    if let Some(sym) = deeper_module
+                                                        .borrow()
+                                                        .scope
+                                                        .clone()
+                                                        .and_then(|s| {
+                                                            s.borrow().get_symbol(&ds.name)
+                                                        })
+                                                    {
+                                                        let an = match &ds.alias {
+                                                            SelectiveAlias::Direct => &ds.name,
+                                                            SelectiveAlias::Named(a) => a,
+                                                            SelectiveAlias::Skip => continue,
+                                                        };
+                                                        let at = Token::new(an.clone(), crate::lexer::token::TokenType::Identifier, token.position.clone(), token.file.clone());
+                                                        if an != &ds.name {
+                                                            self.enter(
+                                                                Rc::new(RefCell::new(
+                                                                    sym.borrow().with_name(an),
+                                                                )),
+                                                                &at,
+                                                            );
+                                                        } else {
+                                                            self.enter(sym, &at);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                        let found_sym =
+                                            sub_module.borrow().scope.clone().and_then(|s| {
+                                                s.borrow().get_symbol(&sub_member.name)
+                                            });
+                                        if let Some(sym) = found_sym {
+                                            let alias_name = match &sub_member.alias {
+                                                SelectiveAlias::Direct => &sub_member.name,
+                                                SelectiveAlias::Named(alias) => alias,
+                                                SelectiveAlias::Skip => continue,
+                                            };
+                                            let alias_tok = Token::new(
+                                                alias_name.clone(),
+                                                crate::lexer::token::TokenType::Identifier,
+                                                token.position.clone(),
+                                                token.file.clone(),
+                                            );
+                                            if alias_name != &sub_member.name {
+                                                self.enter(
+                                                    Rc::new(RefCell::new(
+                                                        sym.borrow().with_name(alias_name),
+                                                    )),
+                                                    &alias_tok,
+                                                );
+                                            } else {
+                                                self.enter(sym, &alias_tok);
+                                            }
+                                        } else {
+                                            self.emit_error(
+                                                TrussDiagnosticCode::SymbolError,
+                                                format!(
+                                                    "Symbol '{}' not found in module '{}'",
+                                                    sub_member.name, member.name
+                                                ),
+                                                token.as_ref(),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::SymbolError,
+                                        format!(
+                                            "Module '{}' not found in '{}'",
+                                            member.name, module_path
+                                        ),
+                                        token.as_ref(),
+                                    );
+                                }
+                                continue;
+                            }
+                            let found_symbol = module
+                                .borrow()
+                                .scope
+                                .clone()
+                                .and_then(|scope| scope.borrow().get_symbol(&member.name));
+                            if let Some(symbol) = found_symbol {
+                                let alias_name = match &member.alias {
+                                    SelectiveAlias::Direct => &member.name,
+                                    SelectiveAlias::Named(alias) => alias,
+                                    SelectiveAlias::Skip => continue,
+                                };
+                                let name_token = Token::new(
+                                    alias_name.clone(),
+                                    crate::lexer::token::TokenType::Identifier,
+                                    token.position.clone(),
+                                    token.file.clone(),
+                                );
+                                if alias_name != &member.name {
+                                    let renamed = Rc::new(RefCell::new(
+                                        symbol.borrow().with_name(alias_name),
+                                    ));
+                                    self.enter(renamed, &name_token);
+                                } else {
+                                    self.enter(symbol, &name_token);
+                                }
+                            } else {
+                                self.emit_error(
+                                    TrussDiagnosticCode::SymbolError,
+                                    format!(
+                                        "Symbol '{}' not found in module '{}'",
+                                        member.name, module_path
+                                    ),
+                                    token.as_ref(),
+                                );
+                            }
+                        }
+                    } else {
+                        self.emit_error(
+                            TrussDiagnosticCode::SymbolError,
+                            format!("Module '{}' not found", module_path),
+                            token.as_ref(),
+                        );
+                    }
+                } else {
+                    match kind {
+                        ImportKind::Module => {
+                            let module_path = if *is_current_package {
+                                format!("{}.{}", self.current_package, path.join("."))
+                            } else {
+                                path.join(".")
+                            };
+                            let target_pkg = if *is_current_package {
+                                self.packages.get(&self.current_package).cloned()
+                            } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
+                                self.packages.get(&path[0]).cloned()
+                            } else {
+                                self.packages.get(&self.current_package).cloned()
+                            };
+                            let module = target_pkg
+                                .as_ref()
+                                .and_then(|p| resolve_module(p, &module_path));
+                            if let Some(module) = module {
+                                let name = path.last().unwrap().clone();
+                                let is_package = !*is_current_package
+                                    && path.len() >= 1
+                                    && self.packages.contains_key(&path[0]);
+                                let module_symbol = Rc::new(RefCell::new(if is_package {
+                                    Symbol::Package {
+                                        name: name.clone(),
+                                        decl: stmt.clone(),
+                                        module: Some(module),
+                                    }
+                                } else {
+                                    Symbol::Module {
+                                        name: name.clone(),
+                                        decl: stmt.clone(),
+                                        module: Some(module),
+                                    }
+                                }));
+                                let name_token = Token::new(
+                                    name,
+                                    crate::lexer::token::TokenType::Identifier,
+                                    token.position.clone(),
+                                    token.file.clone(),
+                                );
+                                self.enter(module_symbol, &name_token);
+                                if let Some(scope) = self.current_scope.as_ref() {
+                                    scope.borrow_mut().imported_names.insert(name_token.value.clone());
+                                }
+                            } else if path.len() == 2
+                                && !*is_current_package
+                                && self.packages.contains_key(&path[0])
+                            {
+                                let member_name = path[1].clone();
+                                let mod_path = path[0].clone();
+                                let found = target_pkg.as_ref().and_then(|p| {
+                                    p.borrow().modules.get(&mod_path).and_then(|m| {
+                                        m.borrow().scope.clone().and_then(|scope| {
+                                            scope.borrow().get_symbol(&member_name)
+                                        })
+                                    })
+                                });
+                                if let Some(sym) = found {
+                                    let name_token = Token::new(
+                                        member_name.clone(),
+                                        crate::lexer::token::TokenType::Identifier,
+                                        token.position.clone(),
+                                        token.file.clone(),
+                                    );
+                                    self.enter(sym, &name_token);
+                                    if let Some(scope) = self.current_scope.as_ref() {
+                                        scope.borrow_mut().imported_names.insert(member_name);
+                                    }
+                                } else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::SymbolError,
+                                        format!(
+                                            "Symbol '{}' not found in module '{}'",
+                                            member_name, mod_path
+                                        ),
+                                        token.as_ref(),
+                                    );
+                                }
+                            } else {
+                                self.emit_error(
+                                    TrussDiagnosticCode::SymbolError,
+                                    format!("Module '{}' not found", module_path),
+                                    token.as_ref(),
+                                );
+                            }
+                        }
+                        ImportKind::Member => {
+                            let member_name = path.last().unwrap().clone();
+                            let module_path = if *is_current_package {
+                                format!(
+                                    "{}.{}",
+                                    self.current_package,
+                                    path[..path.len() - 1].join(".")
+                                )
+                            } else {
+                                path[..path.len() - 1].join(".")
+                            };
+                            let target_pkg = if *is_current_package {
+                                self.packages.get(&self.current_package).cloned()
+                            } else if path.len() >= 2 && self.packages.contains_key(&path[0]) {
+                                self.packages.get(&path[0]).cloned()
+                            } else {
+                                self.packages.get(&self.current_package).cloned()
+                            };
+                            let found_symbol = target_pkg.as_ref().and_then(|p| {
+                                p.borrow().modules.get(&module_path).and_then(|m| {
+                                    m.borrow()
+                                        .scope
+                                        .clone()
+                                        .and_then(|scope| scope.borrow().get_symbol(&member_name))
+                                })
+                            });
+                            if let Some(symbol) = found_symbol {
+                                self.enter(symbol, token.as_ref());
+                                if let Some(scope) = self.current_scope.as_ref() {
+                                    scope.borrow_mut().imported_names.insert(member_name.clone());
+                                }
+                            } else {
+                                self.emit_error(
+                                    TrussDiagnosticCode::SymbolError,
+                                    format!("Symbol '{}' not found", member_name),
+                                    token.as_ref(),
+                                );
+                            }
+                        }
+                        ImportKind::Wildcard => {
+                            let module_path = if *is_current_package {
+                                format!("{}.{}", self.current_package, path.join("."))
+                            } else {
+                                path.join(".")
+                            };
+                            let target_pkg = if *is_current_package {
+                                self.packages.get(&self.current_package).cloned()
+                            } else if path.len() >= 1 && self.packages.contains_key(&path[0]) {
+                                self.packages.get(&path[0]).cloned()
+                            } else {
+                                self.packages.get(&self.current_package).cloned()
+                            };
+                            let module = target_pkg
+                                .as_ref()
+                                .and_then(|p| resolve_module(p, &module_path));
+                            if let Some(module) = module {
+                                let (names, type_names, target_scope) = {
+                                    let scope = module.borrow().scope.clone();
+                                    let (names, type_names) = {
+                                        let s = scope.as_ref().map(|s| s.borrow());
+                                        let names = s
+                                            .as_ref()
+                                            .map(|s| s.name_table.keys().cloned().collect::<Vec<_>>())
+                                            .unwrap_or_default();
+                                        let type_names = s
+                                            .as_ref()
+                                            .map(|s| s.type_env.keys().cloned().collect::<Vec<_>>())
+                                            .unwrap_or_default();
+                                        (names, type_names)
+                                    };
+                                    (names, type_names, scope)
+                                };
+                                for name in &names {
+                                    if let Some(ref ts) = target_scope {
+                                        if ts.borrow().imported_names.contains(name) {
+                                            continue;
+                                        }
+                                    }
+                                    if let Some(symbol) = target_scope
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().get_symbol(name))
+                                    {
+                                        let name_token = Token::new(
+                                            name.clone(),
+                                            crate::lexer::token::TokenType::Identifier,
+                                            token.position.clone(),
+                                            token.file.clone(),
+                                        );
+                                        self.enter(symbol, &name_token);
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().imported_names.insert(name.clone());
+                                        }
+                                    }
+                                    if let Some(ty) = target_scope
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
+                                    {
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
+                                        }
+                                    }
+                                }
+                                for name in &type_names {
+                                    if names.contains(name) {
+                                        continue;
+                                    }
+                                    if let Some(ref ts) = target_scope {
+                                        if ts.borrow().imported_names.contains(name) {
+                                            continue;
+                                        }
+                                    }
+                                    if self.current_scope.as_ref().is_some_and(|scope| {
+                                        scope.borrow().type_env.contains_key(name)
+                                    }) {
+                                        continue;
+                                    }
+                                    if let Some(ty) = target_scope
+                                        .as_ref()
+                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
+                                    {
+                                        if let Some(scope) = self.current_scope.as_ref() {
+                                            scope.borrow_mut().type_env.insert(name.clone(), ty);
+                                            scope.borrow_mut().imported_names.insert(name.clone());
+                                        }
+                                    }
+                                }
+                            } else {
+                                self.emit_error(
+                                    TrussDiagnosticCode::SymbolError,
+                                    format!("Module '{}' not found", module_path),
+                                    token.as_ref(),
+                                );
+                            }
+                        }
+                    }
+                }
             }
             Statement::ConditionalBlock { clauses } => {
                 for clause in clauses {
