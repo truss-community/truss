@@ -2303,6 +2303,7 @@ impl TypeResolver {
     fn get_block_type(&mut self, body: &[Rc<RefCell<Statement>>]) -> Option<Rc<RefCell<Type>>> {
         let mut last_ty = Rc::new(RefCell::new(Type::Void));
         for stmt in body.iter() {
+            self.resolve_statement(stmt.clone());
             if let Some(ty) = self.infer_statement_type(stmt.clone()) {
                 last_ty = ty;
             }
@@ -2887,11 +2888,6 @@ impl TypeResolver {
                         _ => t.clone(),
                     }
                 } else {
-                    // When no explicit type parameters are given but the type is
-                    // generic (e.g. `ArrayIterator` resolves to `ArrayIterator<>`
-                    // with empty type params), fill in default generic params so
-                    // that member access on concrete instances propagates the
-                    // concrete type (e.g., `ArrayIterator<Int32>`).
                     let tb = t.borrow();
                     let fill_info: Option<(String, WeakSymbol, u8)> = match &*tb {
                         Type::Struct(n, sym, params) if params.is_empty() => {
@@ -2909,8 +2905,6 @@ impl TypeResolver {
                     if let Some((name, sym, variant_kind)) = fill_info {
                         if let Some(sym_strong) = sym.0.upgrade() {
                             if let Ok(Some(decl)) = sym_strong.borrow().get_decl() {
-                                // Use try_borrow to avoid panic when the declaration
-                                // is already mutably borrowed (e.g. during struct body processing)
                                 let generic_params: Vec<GenericParameter> = match decl.try_borrow()
                                 {
                                     Ok(stmt) => match &*stmt {
@@ -7367,8 +7361,6 @@ impl TypeResolver {
     ) -> Option<Rc<RefCell<Type>>> {
         match &*statement.borrow() {
             Statement::ExpressionStatement { expression } => self.infer_type(expression.clone()),
-            // Return statements always produce Never as a block type since they
-            // transfer control out of the current function/expression context.
             Statement::Return {
                 value: Some(value), ..
             } => {

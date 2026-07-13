@@ -9644,7 +9644,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                         token: Box::new(Token::new(
                                             field_name.clone(),
                                             TokenType::Identifier,
-                                            member.position.clone(),
+                                            member.position,
                                             member.file.clone(),
                                         )),
                                         value: field_name.clone(),
@@ -12429,6 +12429,7 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     }
                 }
+                eprintln!("{:?} {:?} {}", object, object_ty, member.value);
                 self.emit_error(
                     TrussDiagnosticCode::UnsupportedFeature,
                     "Member access on non-struct type",
