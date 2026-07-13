@@ -666,8 +666,7 @@ impl TypeResolver {
                             }
                         }
 
-                        let resolved_raw: Option<u64> = if let Some(rv_expr) = &ast_case.raw_value
-                        {
+                        let resolved_raw: Option<u64> = if let Some(rv_expr) = &ast_case.raw_value {
                             if raw_value_type.is_none() {
                                 let diag = new_diagnostic(
                                     TrussDiagnosticCode::TypeError,
@@ -2786,7 +2785,11 @@ impl TypeResolver {
                             constructors,
                             ..
                         } => (properties.clone(), methods.clone(), constructors.clone()),
-                        Symbol::Enum { methods, properties, .. } => (properties.clone(), methods.clone(), vec![]),
+                        Symbol::Enum {
+                            methods,
+                            properties,
+                            ..
+                        } => (properties.clone(), methods.clone(), vec![]),
                         Symbol::Protocol {
                             methods,
                             properties,
@@ -2990,11 +2993,13 @@ impl TypeResolver {
                         {
                             *ty = Some(left_ty.clone());
                         }
-                        Expression::NullLiteral { ty, .. }
-                            if ty.is_none() => {
+                        Expression::NullLiteral { ty, .. } if ty.is_none() => {
                             let left_is_nullable = matches!(&*left_ty.borrow(),
                                 Type::Enum(name, ..) if name == "Optional"
-                            ) || matches!(&*left_ty.borrow(), Type::Pointer(_) | Type::NonNullPointer(_));
+                            ) || matches!(
+                                &*left_ty.borrow(),
+                                Type::Pointer(_) | Type::NonNullPointer(_)
+                            );
                             if left_is_nullable {
                                 *ty = Some(left_ty.clone());
                             }
@@ -3581,7 +3586,9 @@ impl TypeResolver {
                         let (init_params_info, is_failable_init) = {
                             let symbol_opt = {
                                 let scope = self.current_scope.as_ref().unwrap().borrow();
-                                weak_sym.0.upgrade()
+                                weak_sym
+                                    .0
+                                    .upgrade()
                                     .or_else(|| scope.get_symbol_qualified(struct_name))
                             };
                             if let Some(symbol) = symbol_opt
@@ -3662,17 +3669,11 @@ impl TypeResolver {
                                         Rc<RefCell<Type>>,
                                     > = std::collections::HashMap::new();
                                     if let Some(tps) = &type_parameters {
-                                        if let Some(symbol) = weak_sym
-                                            .0
-                                            .upgrade()
-                                            .or_else(|| {
-                                                self.current_scope.as_ref().and_then(|scope| {
-                                                    scope.borrow().get_symbol_qualified(
-                                                        struct_name,
-                                                    )
-                                                })
+                                        if let Some(symbol) = weak_sym.0.upgrade().or_else(|| {
+                                            self.current_scope.as_ref().and_then(|scope| {
+                                                scope.borrow().get_symbol_qualified(struct_name)
                                             })
-                                        {
+                                        }) {
                                             let gp_names: Vec<String> = {
                                                 let sym_borrow = symbol.borrow();
                                                 sym_borrow
@@ -3692,9 +3693,7 @@ impl TypeResolver {
                                                             } => Some(
                                                                 generic_parameters
                                                                     .iter()
-                                                                    .map(|gp| {
-                                                                        gp.name.value.clone()
-                                                                    })
+                                                                    .map(|gp| gp.name.value.clone())
                                                                     .collect(),
                                                             ),
                                                             _ => None,
@@ -3724,8 +3723,7 @@ impl TypeResolver {
                                         if !Self::type_contains_generic(param_ty) {
                                             self.closure_expected_type = Some(param_ty.clone());
                                         }
-                                        let arg_ty =
-                                            self.infer_type(param.expression.clone());
+                                        let arg_ty = self.infer_type(param.expression.clone());
                                         self.closure_expected_type = prev_closure_expected;
                                         if let Some(arg_ty) = arg_ty {
                                             Self::collect_generic_mappings(
@@ -3745,9 +3743,7 @@ impl TypeResolver {
 
                             for (i, param) in parameters.iter().enumerate() {
                                 if i < param_tys.len() {
-                                    let expected_ty = if let Some(ref mapping) =
-                                        generic_mapping
-                                    {
+                                    let expected_ty = if let Some(ref mapping) = generic_mapping {
                                         Self::substitute_generic_params(
                                             param_tys[i].clone(),
                                             mapping,
@@ -3816,7 +3812,9 @@ impl TypeResolver {
                         let (init_params_info, is_failable_init) = {
                             let symbol_opt = {
                                 let scope = self.current_scope.as_ref().unwrap().borrow();
-                                weak_sym.0.upgrade()
+                                weak_sym
+                                    .0
+                                    .upgrade()
                                     .or_else(|| scope.get_symbol_qualified(class_name))
                             };
                             if let Some(symbol) = symbol_opt {
@@ -4405,12 +4403,13 @@ impl TypeResolver {
                         .unwrap_or_else(|| Rc::new(RefCell::new(Type::Void)));
 
                     let ends_with_transfer = case.body.last().is_some_and(|s| {
-                        matches!(&*s.borrow(),
+                        matches!(
+                            &*s.borrow(),
                             Statement::Break { .. }
-                            | Statement::Continue { .. }
-                            | Statement::Return { .. }
-                            | Statement::Throw { .. }
-                            | Statement::Goto { .. }
+                                | Statement::Continue { .. }
+                                | Statement::Return { .. }
+                                | Statement::Throw { .. }
+                                | Statement::Goto { .. }
                         )
                     });
 
@@ -4495,13 +4494,24 @@ impl TypeResolver {
                             let sym = scope.get_symbol(&name.value)?;
                             let sym_binding = sym.borrow();
                             let (_type_name, methods, properties) = match &*sym_binding {
-                                Symbol::Struct { name, methods, properties, .. }
-                                | Symbol::Class { name, methods, properties, .. } => {
-                                    (name.clone(), methods.clone(), properties.clone())
+                                Symbol::Struct {
+                                    name,
+                                    methods,
+                                    properties,
+                                    ..
                                 }
-                                Symbol::Enum { name, methods, properties, .. } => {
-                                    (name.clone(), methods.clone(), properties.clone())
-                                }
+                                | Symbol::Class {
+                                    name,
+                                    methods,
+                                    properties,
+                                    ..
+                                } => (name.clone(), methods.clone(), properties.clone()),
+                                Symbol::Enum {
+                                    name,
+                                    methods,
+                                    properties,
+                                    ..
+                                } => (name.clone(), methods.clone(), properties.clone()),
                                 _ => return None,
                             };
                             drop(sym_binding);
@@ -4904,7 +4914,9 @@ impl TypeResolver {
                     Type::Class(class_name, weak_sym, type_params) => {
                         let symbol_opt = {
                             let scope = self.current_scope.as_ref().unwrap().borrow();
-                            weak_sym.0.upgrade()
+                            weak_sym
+                                .0
+                                .upgrade()
                                 .or_else(|| scope.get_symbol_qualified(class_name))
                         };
                         let Some(symbol) = symbol_opt else {
@@ -5239,7 +5251,7 @@ impl TypeResolver {
                     Type::Enum(enum_name, _, type_params) => {
                         let scope = self.current_scope.as_ref().unwrap().borrow();
                         let symbol = scope.get_symbol(enum_name);
-                         let enum_data = symbol.as_ref().and_then(|sym| {
+                        let enum_data = symbol.as_ref().and_then(|sym| {
                             let binding = sym.borrow();
                             if let Symbol::Enum {
                                 cases,
@@ -5249,13 +5261,19 @@ impl TypeResolver {
                                 ..
                             } = &*binding
                             {
-                                Some((cases.clone(), methods.clone(), properties.clone(), *has_dynamic_member_lookup))
+                                Some((
+                                    cases.clone(),
+                                    methods.clone(),
+                                    properties.clone(),
+                                    *has_dynamic_member_lookup,
+                                ))
                             } else {
                                 None
                             }
                         });
                         drop(scope);
-                        let Some((cases, enum_methods, enum_properties, has_dml)) = enum_data else {
+                        let Some((cases, enum_methods, enum_properties, has_dml)) = enum_data
+                        else {
                             let token = &*member;
                             self.emit_error(
                                 TrussDiagnosticCode::FieldNotFound,
@@ -5359,7 +5377,10 @@ impl TypeResolver {
                             };
                             if let Some(t) = resolved_ty {
                                 if let Ok(mut decl_mut) = prop_decl.try_borrow_mut() {
-                                    if let Statement::VariableDecl { ty: prop_ty_mut, .. } = &mut *decl_mut {
+                                    if let Statement::VariableDecl {
+                                        ty: prop_ty_mut, ..
+                                    } = &mut *decl_mut
+                                    {
                                         if prop_ty_mut.is_none() {
                                             *prop_ty_mut = Some(t.clone());
                                         }
@@ -5783,7 +5804,9 @@ impl TypeResolver {
                             Type::Class(class_name, weak_sym, ..) => {
                                 let symbol_opt = {
                                     let scope = self.current_scope.as_ref().unwrap().borrow();
-                                    weak_sym.0.upgrade()
+                                    weak_sym
+                                        .0
+                                        .upgrade()
                                         .or_else(|| scope.get_symbol_qualified(class_name))
                                 };
                                 if let Some(symbol) = symbol_opt {
@@ -6420,7 +6443,9 @@ impl TypeResolver {
                     Type::Class(class_name, weak_sym, ..) => {
                         let symbol_opt = {
                             let scope = self.current_scope.as_ref().unwrap().borrow();
-                            weak_sym.0.upgrade()
+                            weak_sym
+                                .0
+                                .upgrade()
                                 .or_else(|| scope.get_symbol_qualified(class_name))
                         };
                         if let Some(symbol) = symbol_opt {
@@ -8152,15 +8177,17 @@ impl TypeResolver {
                 }
                 // Allow comparing Optional<T> or Pointer<T> with null (Type::Void)
                 if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-                    let left_is_nullable = matches!(&left_ty,
-                        Type::Enum(name, ..) if name == "Optional"
-                    ) || matches!(&left_ty, Type::Pointer(_) | Type::NonNullPointer(_));
-                    let right_is_nullable = matches!(&right_ty,
-                        Type::Enum(name, ..) if name == "Optional"
-                    ) || matches!(&right_ty, Type::Pointer(_) | Type::NonNullPointer(_));
+                    let left_is_nullable =
+                        matches!(&left_ty,
+                            Type::Enum(name, ..) if name == "Optional"
+                        ) || matches!(&left_ty, Type::Pointer(_) | Type::NonNullPointer(_));
+                    let right_is_nullable =
+                        matches!(&right_ty,
+                            Type::Enum(name, ..) if name == "Optional"
+                        ) || matches!(&right_ty, Type::Pointer(_) | Type::NonNullPointer(_));
                     if (left_is_nullable && matches!(right_ty, Type::Void))
-                    || (right_is_nullable && matches!(left_ty, Type::Void))
-                    || (matches!(left_ty, Type::Void) && matches!(right_ty, Type::Void))
+                        || (right_is_nullable && matches!(left_ty, Type::Void))
+                        || (matches!(left_ty, Type::Void) && matches!(right_ty, Type::Void))
                     {
                         return Some(Rc::new(RefCell::new(Type::Struct(
                             "Bool".to_string(),
@@ -8179,13 +8206,12 @@ impl TypeResolver {
                 // For struct/class/enum types with equality operators, always
                 // delegate to operator overload resolution so that
                 // #[autowired] == / != are found by try_resolve_binary_operator.
-                if matches!(
-                    operator,
-                    BinaryOperator::Equal | BinaryOperator::NotEqual
-                ) && matches!(
-                    &left_ty,
-                    Type::Struct(..) | Type::Class(..) | Type::Enum(..)
-                ) {
+                if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual)
+                    && matches!(
+                        &left_ty,
+                        Type::Struct(..) | Type::Class(..) | Type::Enum(..)
+                    )
+                {
                     return None;
                 }
                 let compatible = match (&left_ty, &right_ty) {
@@ -9797,8 +9823,7 @@ impl TypeResolver {
                 } => generic_parameters
                     .iter()
                     .filter_map(|gp| {
-                        if let crate::ast::statement::GenericParameterKind::Type { .. } = &gp.kind
-                        {
+                        if let crate::ast::statement::GenericParameterKind::Type { .. } = &gp.kind {
                             Some(gp.name.value.clone())
                         } else {
                             None
@@ -9813,10 +9838,8 @@ impl TypeResolver {
         if gp_names.is_empty() || gp_names.len() != type_args.len() {
             return Some(raw_types);
         }
-        let mapping: std::collections::HashMap<String, Rc<RefCell<Type>>> = gp_names
-            .into_iter()
-            .zip(type_args.into_iter())
-            .collect();
+        let mapping: std::collections::HashMap<String, Rc<RefCell<Type>>> =
+            gp_names.into_iter().zip(type_args.into_iter()).collect();
         Some(
             raw_types
                 .into_iter()
@@ -11141,13 +11164,18 @@ impl TypeResolver {
         None
     }
 
-    fn find_module_path_from_expr(&self, expr: &Expression) -> Option<(Rc<RefCell<Module>>, String)> {
+    fn find_module_path_from_expr(
+        &self,
+        expr: &Expression,
+    ) -> Option<(Rc<RefCell<Module>>, String)> {
         match expr {
             Expression::Variable { symbol, .. } => {
                 let ws = symbol.as_ref()?;
                 let sym = ws.0.upgrade()?;
                 let binding = sym.borrow();
-                if let Symbol::Module { name, module, .. } | Symbol::Package { name, module, .. } = &*binding {
+                if let Symbol::Module { name, module, .. } | Symbol::Package { name, module, .. } =
+                    &*binding
+                {
                     Some((module.clone()?, name.clone()))
                 } else {
                     None
@@ -11183,7 +11211,10 @@ impl TypeResolver {
             None => {
                 self.emit_error(
                     TrussDiagnosticCode::SymbolError,
-                    format!("Symbol '{}' not found in module '{}'", member.value, prefix_path),
+                    format!(
+                        "Symbol '{}' not found in module '{}'",
+                        member.value, prefix_path
+                    ),
                     member,
                 );
                 return None;

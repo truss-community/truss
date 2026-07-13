@@ -549,8 +549,9 @@ impl BuildOrchestrator {
                     file: Rc::new(target_name.clone()),
                     statements: target_stmts.clone(),
                 };
-                let mut target_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(target_name, "").with_packages(self.packages.clone());
+                let mut target_ir_gen = IRGenerator::new(&context, ir_engine.clone())
+                    .with_namespace(target_name, "")
+                    .with_packages(self.packages.clone());
                 target_ir_gen.predeclare_types(&all_targets);
                 let result = target_ir_gen.generate_with_stdlib(
                     &target_prog,
@@ -611,7 +612,8 @@ impl BuildOrchestrator {
                         if !dep_src_dir.exists() {
                             continue;
                         }
-                        let dep_entries = DependencyResolver::collect_truss_files_recursive(&dep_src_dir);
+                        let dep_entries =
+                            DependencyResolver::collect_truss_files_recursive(&dep_src_dir);
                         for dep_file in &dep_entries {
                             let dep_path = dep_file.to_string_lossy().to_string();
                             if let Some(cached) = self.file_cache.get(&dep_path) {
@@ -621,8 +623,9 @@ impl BuildOrchestrator {
                     }
                 }
 
-                let mut file_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "").with_packages(self.packages.clone());
+                let mut file_ir_gen = IRGenerator::new(&context, ir_engine.clone())
+                    .with_namespace(&pkg_name, "")
+                    .with_packages(self.packages.clone());
                 file_ir_gen.predeclare_types(&all_targets);
                 let file_modules_result =
                     file_ir_gen.generate_with_stdlib(&program, &stdlib_stmts, main_scope.clone());
@@ -646,8 +649,9 @@ impl BuildOrchestrator {
             let combined_file_module: Option<inkwell::module::Module<'_>> = if file_modules
                 .is_empty()
             {
-                let mut single_ir_gen =
-                    IRGenerator::new(&context, ir_engine.clone()).with_namespace(&pkg_name, "").with_packages(self.packages.clone());
+                let mut single_ir_gen = IRGenerator::new(&context, ir_engine.clone())
+                    .with_namespace(&pkg_name, "")
+                    .with_packages(self.packages.clone());
                 single_ir_gen.predeclare_types(&all_targets);
                 let modules = single_ir_gen.generate_with_stdlib(&prog, &stdlib_stmts, main_scope);
                 if ir_engine.borrow().has_errors() {

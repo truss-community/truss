@@ -796,7 +796,13 @@ impl SymbolResolver {
                     )));
                     scope.borrow_mut().set_type(name.value.clone(), enum_ty);
                 }
-                let Symbol::Enum { cases, methods, properties, .. } = &mut *enum_symbol.borrow_mut() else {
+                let Symbol::Enum {
+                    cases,
+                    methods,
+                    properties,
+                    ..
+                } = &mut *enum_symbol.borrow_mut()
+                else {
                     return;
                 };
 
@@ -2862,7 +2868,10 @@ impl SymbolResolver {
                                 );
                                 self.enter(module_symbol, &name_token);
                                 if let Some(scope) = self.current_scope.as_ref() {
-                                    scope.borrow_mut().imported_names.insert(name_token.value.clone());
+                                    scope
+                                        .borrow_mut()
+                                        .imported_names
+                                        .insert(name_token.value.clone());
                                 }
                             } else if path.len() == 2
                                 && !*is_current_package
@@ -2935,7 +2944,10 @@ impl SymbolResolver {
                             if let Some(symbol) = found_symbol {
                                 self.enter(symbol, token.as_ref());
                                 if let Some(scope) = self.current_scope.as_ref() {
-                                    scope.borrow_mut().imported_names.insert(member_name.clone());
+                                    scope
+                                        .borrow_mut()
+                                        .imported_names
+                                        .insert(member_name.clone());
                                 }
                             } else {
                                 self.emit_error(
@@ -2968,7 +2980,9 @@ impl SymbolResolver {
                                         let s = scope.as_ref().map(|s| s.borrow());
                                         let names = s
                                             .as_ref()
-                                            .map(|s| s.name_table.keys().cloned().collect::<Vec<_>>())
+                                            .map(|s| {
+                                                s.name_table.keys().cloned().collect::<Vec<_>>()
+                                            })
                                             .unwrap_or_default();
                                         let type_names = s
                                             .as_ref()
@@ -2999,10 +3013,9 @@ impl SymbolResolver {
                                             scope.borrow_mut().imported_names.insert(name.clone());
                                         }
                                     }
-                                    if let Some(ty) = target_scope
-                                        .as_ref()
-                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
-                                    {
+                                    if let Some(ty) = target_scope.as_ref().and_then(|scope| {
+                                        scope.borrow().type_env.get(name).cloned()
+                                    }) {
                                         if let Some(scope) = self.current_scope.as_ref() {
                                             scope.borrow_mut().type_env.insert(name.clone(), ty);
                                         }
@@ -3022,10 +3035,9 @@ impl SymbolResolver {
                                     }) {
                                         continue;
                                     }
-                                    if let Some(ty) = target_scope
-                                        .as_ref()
-                                        .and_then(|scope| scope.borrow().type_env.get(name).cloned())
-                                    {
+                                    if let Some(ty) = target_scope.as_ref().and_then(|scope| {
+                                        scope.borrow().type_env.get(name).cloned()
+                                    }) {
                                         if let Some(scope) = self.current_scope.as_ref() {
                                             scope.borrow_mut().type_env.insert(name.clone(), ty);
                                             scope.borrow_mut().imported_names.insert(name.clone());

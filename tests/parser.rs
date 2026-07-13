@@ -13951,14 +13951,19 @@ fn test_parse_single_trailing_closure_still_works() {
 fn test_parse_chained_trailing_closures_still_works() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("arr.map { }.filter { }".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "arr.map { }.filter { }".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
     assert!(!engine.borrow().has_errors());
     if let Statement::ExpressionStatement { expression } = &*program.statements[0].borrow()
-        && let Expression::Call { callee, parameters, .. } = &*expression.borrow()
+        && let Expression::Call {
+            callee, parameters, ..
+        } = &*expression.borrow()
         && let Expression::MemberAccess { member, .. } = &*callee.borrow()
     {
         assert_eq!(member.value, "filter");
@@ -13973,12 +13978,18 @@ fn test_parse_chained_trailing_closures_still_works() {
 fn test_parse_dictionary_type_optional() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("let x: [String: Int32]? = null".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "let x: [String: Int32]? = null".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
-    assert!(!engine.borrow().has_errors(), "Should parse [K: V]? without errors");
+    assert!(
+        !engine.borrow().has_errors(),
+        "Should parse [K: V]? without errors"
+    );
     if let Statement::VariableDecl {
         type_expression: Some(ty),
         ..
@@ -14017,7 +14028,10 @@ fn test_parse_empty_dictionary_literal() {
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
-    assert!(!engine.borrow().has_errors(), "Should parse [:] without errors");
+    assert!(
+        !engine.borrow().has_errors(),
+        "Should parse [:] without errors"
+    );
     if let Statement::VariableDecl {
         initializer: Some(init),
         ..
@@ -14037,12 +14051,18 @@ fn test_parse_empty_dictionary_literal() {
 fn test_parse_dictionary_literal_single_trailing_comma() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("let x = [\"key\": 42,]".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "let x = [\"key\": 42,]".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
-    assert!(!engine.borrow().has_errors(), "Should parse [k: v,] without errors");
+    assert!(
+        !engine.borrow().has_errors(),
+        "Should parse [k: v,] without errors"
+    );
     if let Statement::VariableDecl {
         initializer: Some(init),
         ..
@@ -14062,12 +14082,18 @@ fn test_parse_dictionary_literal_single_trailing_comma() {
 fn test_parse_dictionary_literal_multiple() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("let x = [\"a\": 1, \"b\": 2, \"c\": 3]".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "let x = [\"a\": 1, \"b\": 2, \"c\": 3]".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
-    assert!(!engine.borrow().has_errors(), "Should parse multi-element dict without errors");
+    assert!(
+        !engine.borrow().has_errors(),
+        "Should parse multi-element dict without errors"
+    );
     if let Statement::VariableDecl {
         initializer: Some(init),
         ..
@@ -14087,7 +14113,10 @@ fn test_parse_dictionary_literal_multiple() {
 fn test_parse_labeled_loop() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("_loop: loop { break _loop }".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "_loop: loop { break _loop }".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
@@ -14095,9 +14124,15 @@ fn test_parse_labeled_loop() {
     assert!(!engine.borrow().has_errors(), "Should parse labeled loop");
     if let Statement::Labeled { label, body } = &*program.statements[0].borrow() {
         assert_eq!(label.value, "_loop");
-        assert!(matches!(&*body.borrow(), Statement::Loop { .. }), "Expected Loop inside Labeled");
+        assert!(
+            matches!(&*body.borrow(), Statement::Loop { .. }),
+            "Expected Loop inside Labeled"
+        );
     } else {
-        panic!("Expected Labeled, got {:?}", &*program.statements[0].borrow());
+        panic!(
+            "Expected Labeled, got {:?}",
+            &*program.statements[0].borrow()
+        );
     }
 }
 
@@ -14105,14 +14140,20 @@ fn test_parse_labeled_loop() {
 fn test_parse_break_with_label() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("_loop: loop { break _loop }".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "_loop: loop { break _loop }".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
     assert!(!engine.borrow().has_errors());
     if let Statement::Labeled { body, .. } = &*program.statements[0].borrow() {
-        if let Statement::Loop { body: loop_body, .. } = &*body.borrow() {
+        if let Statement::Loop {
+            body: loop_body, ..
+        } = &*body.borrow()
+        {
             if let Statement::Break { label, .. } = &*loop_body[0].borrow() {
                 assert_eq!(label.as_ref().unwrap().value, "_loop");
             } else {
@@ -14130,14 +14171,20 @@ fn test_parse_break_with_label() {
 fn test_parse_continue_with_label() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
-        CharStream::new("outer: while true { continue outer }".to_string(), Rc::new("".to_string())),
+        CharStream::new(
+            "outer: while true { continue outer }".to_string(),
+            Rc::new("".to_string()),
+        ),
         engine.clone(),
     );
     let mut parser = Parser::new(lexer.get_file(), lexer.parse(), engine.clone());
     let program = parser.parse();
     assert!(!engine.borrow().has_errors());
     if let Statement::Labeled { body, .. } = &*program.statements[0].borrow() {
-        if let Statement::While { body: while_body, .. } = &*body.borrow() {
+        if let Statement::While {
+            body: while_body, ..
+        } = &*body.borrow()
+        {
             if let Statement::Continue { label, .. } = &*while_body[0].borrow() {
                 assert_eq!(label.as_ref().unwrap().value, "outer");
             } else {
@@ -14189,7 +14236,10 @@ fn test_iterable_enum_synthesizes_all_cases() {
             let all_cases = body.iter().find(|s| {
                 matches!(&*s.borrow(), Statement::FunctionDecl { name, static_method: true, .. } if name.value == "allCases")
             });
-            assert!(all_cases.is_some(), "allCases static method should be injected");
+            assert!(
+                all_cases.is_some(),
+                "allCases static method should be injected"
+            );
             if let Some(s) = all_cases {
                 if let Statement::FunctionDecl {
                     return_type,

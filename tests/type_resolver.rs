@@ -5982,9 +5982,10 @@ fn test_addr_of_static_method_type() {
 fn test_addr_of_instance_method_type() {
     let code = "struct Point { var x: Int32; func isZero() -> Bool { return self.x == 0 } }
                  func test() -> func() -> Bool { return &Point.isZero }";
-    let errors = run_type_check_with_stdlib(code, &[
-        "#[builtintype] public struct Int32 { func == (rhs: Self) -> Bool { return false } }",
-    ]);
+    let errors = run_type_check_with_stdlib(
+        code,
+        &["#[builtintype] public struct Int32 { func == (rhs: Self) -> Bool { return false } }"],
+    );
     assert_eq!(errors, 0, "Expected no errors for &Type.instanceMethod");
 }
 
@@ -8480,7 +8481,8 @@ fn test_module_qualified_optional_type() {
     let engine = create_engine();
     let mut lexer = Lexer::new(
         CharStream::new(
-            "module Foo { struct Bar { var x: Int32 } } func test() -> Foo.Bar? { return null }".to_string(),
+            "module Foo { struct Bar { var x: Int32 } } func test() -> Foo.Bar? { return null }"
+                .to_string(),
             Rc::new("".to_string()),
         ),
         engine.clone(),
@@ -8540,7 +8542,7 @@ fn test_generic_struct_init_infer_from_integer_literal() {
              func test() {
                  let s = S(v: 1)
              }"
-                .to_string(),
+            .to_string(),
             Rc::new("".to_string()),
         ),
         engine.clone(),
@@ -8574,7 +8576,7 @@ fn test_generic_struct_init_infer_from_custom_type() {
                  let c = Custom(x: 42)
                  let w = Wrapper(value: c)
              }"
-                .to_string(),
+            .to_string(),
             Rc::new("".to_string()),
         ),
         engine.clone(),
@@ -8606,7 +8608,7 @@ fn test_generic_struct_init_with_explicit_type_parameters() {
              func test() {
                  let s = S<Int32>(v: 1)
              }"
-                .to_string(),
+            .to_string(),
             Rc::new("".to_string()),
         ),
         engine.clone(),
