@@ -5425,10 +5425,10 @@ impl Parser {
                 })),
                 ty: None,
             };
-            let func_token = Box::new(Token::new(
-                "func".to_string(),
+            let var_token = Box::new(Token::new(
+                "var".to_string(),
                 TokenType::Keyword {
-                    keyword: KeywordType::Func,
+                    keyword: KeywordType::Var,
                 },
                 position.clone(),
                 file.clone(),
@@ -5436,27 +5436,47 @@ impl Parser {
             let all_cases_name = Box::new(Token::new(
                 "allCases".to_string(),
                 TokenType::Identifier,
-                position,
-                file,
+                position.clone(),
+                file.clone(),
             ));
-            body.push(Rc::new(RefCell::new(Statement::FunctionDecl {
-                attributes: vec![],
-                modifiers: vec![],
-                token: func_token,
+            let return_token = Box::new(Token::new(
+                "return".to_string(),
+                TokenType::Keyword {
+                    keyword: KeywordType::Return,
+                },
+                position.clone(),
+                file.clone(),
+            ));
+            let return_stmt = Rc::new(RefCell::new(Statement::Return {
+                token: return_token,
+                value: Some(Rc::new(RefCell::new(array_expr))),
+            }));
+            let static_modifier = Modifier {
+                token: Box::new(Token::new(
+                    "static".to_string(),
+                    TokenType::Keyword {
+                        keyword: KeywordType::Static,
+                    },
+                    position.clone(),
+                    file.clone(),
+                )),
+                ty: ModifierType::Static,
+            };
+            body.push(Rc::new(RefCell::new(Statement::VariableDecl {
+                modifiers: vec![static_modifier],
+                token: var_token,
                 name: all_cases_name,
-                generic_parameters: vec![],
-                parameters: vec![],
-                return_type: Some(Rc::new(RefCell::new(return_type))),
-                throws_types: None,
-                body: Rc::new(RefCell::new(FunctionBody::Expression(Rc::new(
-                    RefCell::new(array_expr),
-                )))),
-                where_clause: None,
-                scope: None,
+                pattern: None,
+                type_expression: Some(Rc::new(RefCell::new(return_type))),
+                initializer: None,
+                accessors: vec![Accessor {
+                    kind: AccessorKind::Get,
+                    parameter: None,
+                    body: vec![return_stmt],
+                    set_access_modifier: None,
+                }],
+                ownership: OwnershipModifier::Strong,
                 ty: None,
-                static_method: true,
-                mutating: false,
-                operator_fixity: None,
             })));
         }
         Ok(Statement::EnumDecl {

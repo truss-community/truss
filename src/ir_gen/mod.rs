@@ -26,8 +26,8 @@ use crate::{
         },
         node::Program,
         statement::{
-            Accessor, AccessorKind, AsmOperand, FunctionBody, OwnershipModifier, Parameter,
-            Pattern, ProtocolMember, Statement, VariadicKind,
+            Accessor, AccessorKind, AsmOperand, FunctionBody, ModifierType, OwnershipModifier,
+            Parameter, Pattern, ProtocolMember, Statement, VariadicKind,
         },
     },
     diag::{TrussDiagnosticCode, TrussDiagnosticEngine, new_diagnostic, primary_label_from_token},
@@ -2824,6 +2824,46 @@ impl<'ctx> IRGenerator<'ctx> {
                                 self.register_mangled_name(
                                     &format!("{}.subscript.setter.{}", name.value, label_key),
                                     &setter_mangled,
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Statement::VariableDecl {
+                    name: field_name,
+                    accessors,
+                    ty: Some(ty),
+                    modifiers,
+                    ..
+                } = &*stmt.borrow()
+                {
+                    let has_explicit_get = accessors
+                        .iter()
+                        .any(|a| matches!(a.kind, AccessorKind::Get));
+                    let is_static = modifiers
+                        .iter()
+                        .any(|m| matches!(m.ty, ModifierType::Static));
+                    if has_explicit_get {
+                        if let Ok(llvm_ty) = self.resolve_type(ty.clone()) {
+                            if is_static {
+                                let getter_name = self.mangle_fn_name(
+                                    &format!("{}.{}.getter", name.value, field_name.value),
+                                    &[],
+                                );
+                                if self.module.get_function(&getter_name).is_none() {
+                                    let fn_type = llvm_ty.fn_type(&[], false);
+                                    self.module.add_function(&getter_name, fn_type, None);
+                                    self.register_mangled_name(
+                                        &format!("{}.{}.getter", name.value, field_name.value),
+                                        &getter_name,
+                                    );
+                                }
+                            } else {
+                                self.declare_accessor_functions(
+                                    &name.value,
+                                    &field_name.value,
+                                    accessors,
+                                    llvm_ty,
                                 );
                             }
                         }
@@ -6466,6 +6506,59 @@ impl<'ctx> IRGenerator<'ctx> {
                 self.current_struct.borrow_mut().replace(name.value.clone());
                 let result = (|| -> Result<bool> {
                     for stmt in body {
+                        if let Statement::VariableDecl {
+                            name: field_name,
+                            accessors,
+                            ty: Some(ty),
+                            modifiers,
+                            ..
+                        } = &*stmt.borrow()
+                        {
+                            let is_static = modifiers
+                                .iter()
+                                .any(|m| matches!(m.ty, ModifierType::Static));
+                            let has_explicit_get = accessors
+                                .iter()
+                                .any(|a| matches!(a.kind, AccessorKind::Get));
+                            if is_static && has_explicit_get {
+                                if let Ok(llvm_ty) = self.resolve_type(ty.clone()) {
+                                    let getter_base = format!("{}.{}.getter", name.value, field_name.value);
+                                    let getter_name = self
+                                        .mangled_fn_names
+                                        .borrow()
+                                        .get(&getter_base)
+                                        .cloned()
+                                        .unwrap_or_else(|| self.mangle_fn_name(&getter_base, &[]));
+                                    if let Some(getter_fn) = self.module.get_function(&getter_name) {
+                                        if getter_fn.count_basic_blocks() == 0 {
+                                            let current_block = self.builder.get_insert_block();
+                                            let entry = self.context.append_basic_block(getter_fn, "entry");
+                                            self.builder.position_at_end(entry);
+                                            self.enter_scope();
+                                            for accessor in accessors {
+                                                if matches!(accessor.kind, AccessorKind::Get) {
+                                                    let mut has_return = false;
+                                                    for s in &accessor.body {
+                                                        if self.resolve_statement(s.clone())? {
+                                                            has_return = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if !has_return {
+                                                        self.builder.build_return(None)?;
+                                                    }
+                                                    break;
+                                                }
+                                            }
+                                            self.exit_scope();
+                                            if let Some(block) = current_block {
+                                                self.builder.position_at_end(block);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         self.resolve_statement(stmt.clone())?;
                     }
                     Ok(false)
@@ -7581,7 +7674,32 @@ impl<'ctx> IRGenerator<'ctx> {
                     Ok(Some(bitcast.into()))
                 }
             }
-            Expression::ArrayLiteral { elements, .. } => {
+            Expression::ArrayLiteral { elements, ty, .. } => {
+                if elements.is_empty() {
+                    if let Some(arr_ty) = ty.as_ref() {
+                        let type_name = match &*arr_ty.borrow() {
+                            Type::Class(n, ..) | Type::Struct(n, ..) => n.clone(),
+                            _ => String::new(),
+                        };
+                        if !type_name.is_empty() {
+                            if let Some(class_type) = self.class_types.borrow().get(&type_name).cloned() {
+                                let obj_ptr = self.heap_allocate(class_type.as_basic_type_enum())?;
+                                let init_name = self.mangle_fn_name(&format!("{}.init", type_name), &[]);
+                                if let Some(init_fn) = self.module.get_function(&init_name) {
+                                    self.builder.build_call(init_fn, &[obj_ptr.into()], "")?;
+                                }
+                                return Ok(Some(obj_ptr.into()));
+                            }
+                        }
+                    }
+                    let init_name = self.mangle_fn_name("Array.init", &[]);
+                    if let Some(init_fn) = self.module.get_function(&init_name) {
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                        let obj_ptr = self.heap_allocate(ptr_ty.into())?;
+                        self.builder.build_call(init_fn, &[obj_ptr.into()], "")?;
+                        return Ok(Some(obj_ptr.into()));
+                    }
+                }
                 for element in elements {
                     self.resolve_expression(element.clone())?;
                 }
@@ -7592,7 +7710,32 @@ impl<'ctx> IRGenerator<'ctx> {
                         .into(),
                 ))
             }
-            Expression::DictionaryLiteral { elements, .. } => {
+            Expression::DictionaryLiteral { elements, ty, .. } => {
+                if elements.is_empty() {
+                    if let Some(dict_ty) = ty.as_ref() {
+                        let type_name = match &*dict_ty.borrow() {
+                            Type::Class(n, ..) | Type::Struct(n, ..) => n.clone(),
+                            _ => String::new(),
+                        };
+                        if !type_name.is_empty() {
+                            if let Some(class_type) = self.class_types.borrow().get(&type_name).cloned() {
+                                let obj_ptr = self.heap_allocate(class_type.as_basic_type_enum())?;
+                                let init_name = self.mangle_fn_name(&format!("{}.init", type_name), &[]);
+                                if let Some(init_fn) = self.module.get_function(&init_name) {
+                                    self.builder.build_call(init_fn, &[obj_ptr.into()], "")?;
+                                }
+                                return Ok(Some(obj_ptr.into()));
+                            }
+                        }
+                    }
+                    let init_name = self.mangle_fn_name("Dictionary.init", &[]);
+                    if let Some(init_fn) = self.module.get_function(&init_name) {
+                        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                        let obj_ptr = self.heap_allocate(ptr_ty.into())?;
+                        self.builder.build_call(init_fn, &[obj_ptr.into()], "")?;
+                        return Ok(Some(obj_ptr.into()));
+                    }
+                }
                 for (key, value) in elements {
                     self.resolve_expression(key.clone())?;
                     self.resolve_expression(value.clone())?;
@@ -11691,6 +11834,26 @@ impl<'ctx> IRGenerator<'ctx> {
                         return Ok(Some(result_val));
                     }
 
+                    if let Some(cross_name) = self.find_cross_module_fn_mangled(&class_name, &format!("{}.getter", field_name)) {
+                        if self.module.get_function(&cross_name).is_none() {
+                            let ret_ty = expr.borrow().get_ty_ref().ok().and_then(|t| t.clone());
+                            if let Some(ret_ty) = ret_ty {
+                                if let Ok(llvm_ret_ty) = self.resolve_type(ret_ty) {
+                                    let ptr_type = self.context.ptr_type(inkwell::AddressSpace::from(0));
+                                    let fn_type = llvm_ret_ty.fn_type(&[ptr_type.into()], false);
+                                    self.module.add_function(&cross_name, fn_type, None);
+                                }
+                            }
+                        }
+                        if let Some(getter_fn) = self.module.get_function(&cross_name) {
+                            let result = self.builder.build_call(getter_fn, &[class_ptr.into()], "")?;
+                            match result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                                _ => return Ok(None),
+                            }
+                        }
+                    }
+
                     let is_method = if let Some(scope) = self.program_scope.borrow().as_ref() {
                         if let Some(sym) = scope.borrow().get_symbol_deep(&class_name) {
                             let binding = sym.borrow();
@@ -12084,6 +12247,75 @@ impl<'ctx> IRGenerator<'ctx> {
 
                 if self.is_module_expression(object) {
                     anyhow::bail!("Module member access not supported in this context");
+                }
+                let enum_name = object_ty
+                    .as_ref()
+                    .and_then(|ty| {
+                        let ty_borrow = ty.borrow();
+                        match &*ty_borrow {
+                            Type::Enum(name, ..) => Some(name.clone()),
+                            _ => None,
+                        }
+                    })
+                    .or_else(|| {
+                        if let Expression::Variable { symbol, .. } = &*object.borrow() {
+                            if let Some(sym) = symbol.as_ref().and_then(|s| s.0.upgrade()) {
+                                if let Symbol::Enum { name, .. } = &*sym.borrow() {
+                                    return Some(name.clone());
+                                }
+                            }
+                        }
+                        None
+                    });
+                if let Some(enum_name) = enum_name {
+                    let getter_base = format!("{}.{}.getter", enum_name, member.value);
+                    let getter_name = self
+                        .mangled_fn_names
+                        .borrow()
+                        .get(&getter_base)
+                        .cloned()
+                        .unwrap_or_else(|| self.mangle_fn_name(&getter_base, &[]));
+                    if let Some(getter_fn) = self.module.get_function(&getter_name) {
+                        let result = self.builder.build_call(getter_fn, &[], "")?;
+                        match result.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                            _ => return Ok(None),
+                        }
+                    }
+                    if let Some(cross_name) = self.find_cross_module_fn_mangled(&enum_name, &format!("{}.getter", member.value)) {
+                        if self.module.get_function(&cross_name).is_none() {
+                            let ret_ty = expr.borrow().get_ty_ref().ok().and_then(|t| t.clone());
+                            if let Some(ret_ty) = ret_ty {
+                                if let Ok(llvm_ret_ty) = self.resolve_type(ret_ty) {
+                                    let fn_type = llvm_ret_ty.fn_type(&[], false);
+                                    self.module.add_function(&cross_name, fn_type, None);
+                                }
+                            }
+                        }
+                        if let Some(getter_fn) = self.module.get_function(&cross_name) {
+                            let result = self.builder.build_call(getter_fn, &[], "")?;
+                            match result.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                                _ => return Ok(None),
+                            }
+                        }
+                    }
+                    if self.module.get_function(&getter_name).is_none() {
+                        let ret_ty = expr.borrow().get_ty_ref().ok().and_then(|t| t.clone());
+                        if let Some(ret_ty) = ret_ty {
+                            if let Ok(llvm_ret_ty) = self.resolve_type(ret_ty) {
+                                let fn_type = llvm_ret_ty.fn_type(&[], false);
+                                self.module.add_function(&getter_name, fn_type, None);
+                            }
+                        }
+                    }
+                    if let Some(getter_fn) = self.module.get_function(&getter_name) {
+                        let result = self.builder.build_call(getter_fn, &[], "")?;
+                        match result.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
+                            _ => return Ok(None),
+                        }
+                    }
                 }
                 self.emit_error(
                     TrussDiagnosticCode::UnsupportedFeature,

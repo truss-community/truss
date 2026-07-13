@@ -785,6 +785,7 @@ impl SymbolResolver {
                     has_dynamic_callable: has_dcl,
                     cases: vec![],
                     methods: vec![],
+                    properties: vec![],
                 }));
                 self.enter(enum_symbol.clone(), name);
                 if let Some(scope) = self.current_scope.as_ref() {
@@ -795,7 +796,7 @@ impl SymbolResolver {
                     )));
                     scope.borrow_mut().set_type(name.value.clone(), enum_ty);
                 }
-                let Symbol::Enum { cases, methods, .. } = &mut *enum_symbol.borrow_mut() else {
+                let Symbol::Enum { cases, methods, properties, .. } = &mut *enum_symbol.borrow_mut() else {
                     return;
                 };
 
@@ -871,6 +872,23 @@ impl SymbolResolver {
                                 FunctionBody::None => {}
                             }
                         }
+                    } else if let Statement::VariableDecl {
+                        name: field_name,
+                        token: field_token,
+                        ownership: field_ownership,
+                        ..
+                    } = &*field_stmt.borrow()
+                    {
+                        let is_var = field_token.value == "var";
+                        let field_symbol = Rc::new(RefCell::new(Symbol::StructProperty {
+                            name: field_name.value.clone(),
+                            parent: WeakSymbol(Rc::downgrade(&enum_symbol)),
+                            decl: Some(field_stmt.clone()),
+                            is_var,
+                            ownership: *field_ownership,
+                        }));
+                        properties.push(field_symbol.clone());
+                        self.enter(field_symbol, field_name);
                     } else {
                         self.register_symbols(field_stmt.clone());
                     }
@@ -1498,6 +1516,7 @@ impl SymbolResolver {
                 token: var_token,
                 initializer,
                 accessors,
+                ownership,
                 ..
             } => {
                 if let Some(pattern) = decl_pattern {
@@ -1505,18 +1524,12 @@ impl SymbolResolver {
                     Self::resolve_variable_pattern(pattern, stmt.clone(), is_var, self);
                 } else if name.value != "_" {
                     let is_var = var_token.value == "var";
-                    let ownership =
-                        if let Statement::VariableDecl { ownership, .. } = &*stmt.borrow() {
-                            *ownership
-                        } else {
-                            OwnershipModifier::Strong
-                        };
                     let symbol = Rc::new(RefCell::new(Symbol::Variable {
                         name: name.value.clone(),
                         decl: Some(stmt.clone()),
                         parameter: None,
                         is_var,
-                        ownership,
+                        ownership: *ownership,
                     }));
                     self.enter(symbol, name);
                 }

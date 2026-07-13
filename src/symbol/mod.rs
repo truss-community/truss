@@ -100,6 +100,7 @@ pub enum Symbol {
         has_dynamic_callable: bool,
         cases: Vec<Rc<RefCell<Symbol>>>,
         methods: Vec<Rc<RefCell<Symbol>>>,
+        properties: Vec<Rc<RefCell<Symbol>>>,
     },
     EnumCase {
         name: String,
@@ -310,6 +311,7 @@ impl PartialEq for Symbol {
                     has_dynamic_callable: hdc_a,
                     cases: ac,
                     methods: am,
+                    properties: ap,
                     package: _,
                 },
                 Self::Enum {
@@ -319,6 +321,7 @@ impl PartialEq for Symbol {
                     has_dynamic_callable: hdc_b,
                     cases: bc,
                     methods: bm,
+                    properties: bp,
                     package: _,
                 },
             ) => {
@@ -328,6 +331,7 @@ impl PartialEq for Symbol {
                     && hdc_a == hdc_b
                     && ac == bc
                     && am == bm
+                    && ap == bp
             }
             (
                 Self::EnumCase {

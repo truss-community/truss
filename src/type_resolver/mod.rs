@@ -832,6 +832,16 @@ impl TypeResolver {
                     {
                         *ty = Some(fn_type.clone());
                     }
+                    if let Statement::VariableDecl {
+                        type_expression: Some(te),
+                        ty: var_ty,
+                        ..
+                    } = &mut *stmt.borrow_mut()
+                    {
+                        if var_ty.is_none() {
+                            *var_ty = self.infer_type(te.clone());
+                        }
+                    }
                     self.process_decl(stmt.clone());
                 }
                 self.leave_scope();
@@ -2776,7 +2786,7 @@ impl TypeResolver {
                             constructors,
                             ..
                         } => (properties.clone(), methods.clone(), constructors.clone()),
-                        Symbol::Enum { methods, .. } => (vec![], methods.clone(), vec![]),
+                        Symbol::Enum { methods, properties, .. } => (properties.clone(), methods.clone(), vec![]),
                         Symbol::Protocol {
                             methods,
                             properties,
@@ -4484,11 +4494,13 @@ impl TypeResolver {
                             let scope = self.current_scope.as_ref()?.borrow();
                             let sym = scope.get_symbol(&name.value)?;
                             let sym_binding = sym.borrow();
-                            let (_type_name, methods) = match &*sym_binding {
-                                Symbol::Struct { name, methods, .. }
-                                | Symbol::Class { name, methods, .. }
-                                | Symbol::Enum { name, methods, .. } => {
-                                    (name.clone(), methods.clone())
+                            let (_type_name, methods, properties) = match &*sym_binding {
+                                Symbol::Struct { name, methods, properties, .. }
+                                | Symbol::Class { name, methods, properties, .. } => {
+                                    (name.clone(), methods.clone(), properties.clone())
+                                }
+                                Symbol::Enum { name, methods, properties, .. } => {
+                                    (name.clone(), methods.clone(), properties.clone())
                                 }
                                 _ => return None,
                             };
@@ -4508,6 +4520,39 @@ impl TypeResolver {
                                         *ty = Some(method_ty.clone());
                                         return Some(method_ty.clone());
                                     }
+                                }
+                            }
+                            for prop in &properties {
+                                if prop.borrow().name().as_ref().ok() != Some(&member.value) {
+                                    continue;
+                                }
+                                let prop_decl = match prop.borrow().get_decl().ok().flatten() {
+                                    Some(d) => d,
+                                    None => continue,
+                                };
+                                let (cached_ty, type_expr_opt) = {
+                                    let decl_ref = prop_decl.borrow();
+                                    if let Statement::VariableDecl {
+                                        ty: prop_ty,
+                                        type_expression,
+                                        ..
+                                    } = &*decl_ref
+                                    {
+                                        (prop_ty.clone(), type_expression.clone())
+                                    } else {
+                                        (None, None)
+                                    }
+                                };
+                                let resolved_ty = if let Some(t) = cached_ty {
+                                    Some(t)
+                                } else if let Some(type_expr) = type_expr_opt {
+                                    self.infer_type(type_expr)
+                                } else {
+                                    None
+                                };
+                                if let Some(t) = resolved_ty {
+                                    *ty = Some(t.clone());
+                                    return Some(t);
                                 }
                             }
                         }
@@ -5199,17 +5244,18 @@ impl TypeResolver {
                             if let Symbol::Enum {
                                 cases,
                                 methods,
+                                properties,
                                 has_dynamic_member_lookup,
                                 ..
                             } = &*binding
                             {
-                                Some((cases.clone(), methods.clone(), *has_dynamic_member_lookup))
+                                Some((cases.clone(), methods.clone(), properties.clone(), *has_dynamic_member_lookup))
                             } else {
                                 None
                             }
                         });
                         drop(scope);
-                        let Some((cases, enum_methods, has_dml)) = enum_data else {
+                        let Some((cases, enum_methods, enum_properties, has_dml)) = enum_data else {
                             let token = &*member;
                             self.emit_error(
                                 TrussDiagnosticCode::FieldNotFound,
@@ -5281,6 +5327,46 @@ impl TypeResolver {
                                         return Some(case_fn_type);
                                     }
                                 }
+                            }
+                        }
+                        for prop in &enum_properties {
+                            if prop.borrow().name().as_ref().ok() != Some(&member.value) {
+                                continue;
+                            }
+                            let prop_decl = match prop.borrow().get_decl().ok().flatten() {
+                                Some(d) => d,
+                                None => continue,
+                            };
+                            let (cached_ty, type_expr_opt) = {
+                                let decl_ref = prop_decl.borrow();
+                                if let Statement::VariableDecl {
+                                    ty: prop_ty,
+                                    type_expression,
+                                    ..
+                                } = &*decl_ref
+                                {
+                                    (prop_ty.clone(), type_expression.clone())
+                                } else {
+                                    (None, None)
+                                }
+                            };
+                            let resolved_ty = if let Some(t) = cached_ty {
+                                Some(t)
+                            } else if let Some(type_expr) = type_expr_opt {
+                                self.infer_type(type_expr)
+                            } else {
+                                None
+                            };
+                            if let Some(t) = resolved_ty {
+                                if let Ok(mut decl_mut) = prop_decl.try_borrow_mut() {
+                                    if let Statement::VariableDecl { ty: prop_ty_mut, .. } = &mut *decl_mut {
+                                        if prop_ty_mut.is_none() {
+                                            *prop_ty_mut = Some(t.clone());
+                                        }
+                                    }
+                                }
+                                *ty = Some(t.clone());
+                                return Some(t);
                             }
                         }
                         for method in &enum_methods {
@@ -11092,7 +11178,17 @@ impl TypeResolver {
     ) -> Option<Rc<RefCell<Type>>> {
         let (module, prefix_path) = self.find_module_path_from_expr(&object.borrow())?;
         let scope = module.borrow().scope.clone()?;
-        let sym = scope.borrow().get_symbol(&member.value)?;
+        let sym = match scope.borrow().get_symbol(&member.value) {
+            Some(s) => s,
+            None => {
+                self.emit_error(
+                    TrussDiagnosticCode::SymbolError,
+                    format!("Symbol '{}' not found in module '{}'", member.value, prefix_path),
+                    member,
+                );
+                return None;
+            }
+        };
         let binding = sym.borrow();
 
         if let Symbol::Module { .. } = &*binding {
