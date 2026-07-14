@@ -61,7 +61,15 @@ impl BuildOrchestrator {
             crate::trusspm::cli::process_build_truss(project_path, &self.packages);
 
         let mut stdlib_stmts: Vec<Rc<RefCell<Statement>>> = Vec::new();
-        if let Some(std_path) = crate::trusspm::find_stdlib_path() {
+        let is_stdlib_self = crate::trusspm::find_stdlib_path()
+            .map(|p| {
+                let canonical_project = project_path.canonicalize().unwrap_or(project_path.to_path_buf());
+                let canonical_std = std::path::Path::new(&p).canonicalize().unwrap_or(std::path::Path::new(&p).to_path_buf());
+                canonical_project == canonical_std
+            })
+            .unwrap_or(false);
+        if !is_stdlib_self
+            && let Some(std_path) = crate::trusspm::find_stdlib_path() {
             let truss_pkg = Rc::new(RefCell::new(Package::new("Truss".to_string())));
             self.packages.insert("Truss".to_string(), truss_pkg.clone());
 
@@ -160,7 +168,7 @@ impl BuildOrchestrator {
                 .manifest
                 .targets
                 .iter()
-                .filter(|t| t.name != self.manifest.name)
+                .filter(|t| is_stdlib_self || t.name != self.manifest.name)
                 .map(|t| t.name.clone())
                 .collect();
 
@@ -256,7 +264,10 @@ impl BuildOrchestrator {
                         }
                         return;
                     }
-                    let stmts = program.statements;
+                    let mut stmts = program.statements;
+                    let triple = TargetTriple::host();
+                    let mut symbols = predefined_symbols(&path_str);
+                    flatten_program(&mut stmts, &triple, &mut symbols);
                     if let Ok(meta) = std::fs::metadata(file) {
                         if let Ok(mtime) = meta.modified() {
                             self.file_cache.insert(

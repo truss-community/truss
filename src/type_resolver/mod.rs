@@ -555,7 +555,7 @@ impl TypeResolver {
                     .as_ref()
                     .unwrap()
                     .borrow_mut()
-                    .set_type(name.value.clone(), enum_ty);
+                    .set_type(name.value.clone(), enum_ty.clone());
 
                 let prev_owner = self.current_owner.replace(symbol.clone());
                 self.enter_scope(scope.as_ref().unwrap().clone());
@@ -587,6 +587,17 @@ impl TypeResolver {
                         self.infer_type(default_value.clone());
                     }
                 }
+
+                self.current_scope
+                    .as_ref()
+                    .unwrap()
+                    .borrow_mut()
+                    .set_type("self".to_string(), enum_ty.clone());
+                self.current_scope
+                    .as_ref()
+                    .unwrap()
+                    .borrow_mut()
+                    .set_type("Self".to_string(), enum_ty.clone());
 
                 let mut protocol_conformances: Vec<Rc<RefCell<Expression>>> = Vec::new();
                 for conformance in conformances {
@@ -1985,9 +1996,18 @@ impl TypeResolver {
                 scope,
                 members,
                 name,
+                generic_parameters,
                 ..
             } => {
                 self.enter_scope(scope.as_ref().unwrap().clone());
+                for gp in generic_parameters {
+                    let gp_type = Rc::new(RefCell::new(Type::GenericParam(gp.name.value.clone())));
+                    self.current_scope
+                        .as_ref()
+                        .unwrap()
+                        .borrow_mut()
+                        .set_type(gp.name.value.clone(), gp_type);
+                }
                 for member in members {
                     match member {
                         ProtocolMember::Method { decl, .. } => {
@@ -2046,7 +2066,9 @@ impl TypeResolver {
                                 self.current_return_type = last_return_type;
                             }
                         }
-                        ProtocolMember::Property { .. } => {}
+                        ProtocolMember::Property { type_expression, .. } => {
+                            self.infer_type(type_expression.clone());
+                        }
                         ProtocolMember::AssociatedType { .. } => {}
                         ProtocolMember::TypeAlias {
                             name,
@@ -2407,6 +2429,14 @@ impl TypeResolver {
                     && let Some(ty) = current_scope.borrow().get_type(name)
                 {
                     return Some(ty);
+                }
+                if name == "Item" {
+                    let scope_chain = self.current_scope.as_ref().map(|s| {
+                        let s = s.borrow();
+                        let types: Vec<String> = s.type_env.keys().cloned().collect();
+                        format!("scope types: {:?}", types)
+                    });
+                    eprintln!("DBG_ITEM: scope_chain={:?}", scope_chain);
                 }
                 self.emit_error(
                     TrussDiagnosticCode::UnknownType,
@@ -9053,13 +9083,18 @@ impl TypeResolver {
             }
 
             if best_idx.is_some() {
-                let token = &callee.borrow().token();
-                self.emit_error(
-                    TrussDiagnosticCode::AmbiguousOverload,
-                    "Call is ambiguous: multiple overloads match the provided arguments",
-                    token,
-                );
-                return None;
+                let is_same_decl = best_info.as_ref().map_or(false, |(_, _, _, prev_decl)| {
+                    Rc::ptr_eq(&prev_decl, &decl)
+                });
+                if !is_same_decl {
+                    let token = &callee.borrow().token();
+                    self.emit_error(
+                        TrussDiagnosticCode::AmbiguousOverload,
+                        "Call is ambiguous: multiple overloads match the provided arguments",
+                        token,
+                    );
+                    return None;
+                }
             }
 
             best_idx = Some(i);
@@ -11366,9 +11401,11 @@ impl TypeResolver {
                                                     })
                                                 };
                                                 if let Some(ref set_access) = set_access {
-                                                    if !self.is_setter_accessible(
-                                                        set_access, prop_clone, &token,
-                                                    ) {
+                                                    let is_self_in_same_type = matches!(&*object.borrow(), Expression::SelfKeyword { .. })
+                                                        && self.current_owner.is_some();
+                                                    if !is_self_in_same_type
+                                                        && !self.is_setter_accessible(set_access, prop_clone.clone(), &token)
+                                                    {
                                                         self.emit_error(
                                                             TrussDiagnosticCode::InvalidMemberAccessLevel,
                                                             format!("Cannot assign to property '{}' due to setter access level", name),

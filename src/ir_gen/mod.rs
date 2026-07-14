@@ -1143,13 +1143,53 @@ impl<'ctx> IRGenerator<'ctx> {
         }
     }
 
+    fn mangle_init_name(
+        &self,
+        type_name: &str,
+        init_key: &str,
+        arg_count: usize,
+    ) -> String {
+        let sym = self
+            .program_scope
+            .borrow()
+            .as_ref()
+            .and_then(|scope| scope.borrow().get_symbol_deep(type_name))
+            .or_else(|| self.find_symbol_in_packages(type_name));
+        if let Some(sym) = &sym {
+            let binding = sym.borrow();
+            if let Symbol::Class { package, decl, .. } | Symbol::Struct { package, decl, .. } = &*binding {
+                if let Statement::ClassDecl { body, .. } | Statement::StructDecl { body, .. } =
+                    &*decl.borrow()
+                {
+                    for s in body {
+                        if let Statement::InitDecl { parameters, .. } = &*s.borrow() {
+                            if parameters.len() == arg_count {
+                                if let Some(cross) = self.find_cross_module_fn_mangled_for(
+                                    package,
+                                    type_name,
+                                    "init",
+                                    parameters,
+                                ) {
+                                    return cross;
+                                }
+                                return self.mangle_fn_name(init_key, parameters);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.mangle_fn_name(init_key, &[])
+    }
+
     fn find_cross_module_fn_mangled(&self, type_name: &str, fn_suffix: &str) -> Option<String> {
         let scope = self.program_scope.borrow();
         let scope_ref = scope.as_ref()?;
         let symbol = scope_ref
             .borrow()
             .get_symbol_deep(type_name)
-            .or_else(|| scope_ref.borrow().get_symbol_qualified(type_name))?;
+            .or_else(|| scope_ref.borrow().get_symbol_qualified(type_name))
+            .or_else(|| self.find_symbol_in_packages(type_name))?;
         let (package, module) = match &*symbol.borrow() {
             Symbol::Struct { package, decl, .. }
             | Symbol::Class { package, decl, .. }
@@ -1180,11 +1220,159 @@ impl<'ctx> IRGenerator<'ctx> {
         drop(symbol);
         let _ = scope_ref;
         drop(scope);
-        if package == self.package_name {
-            return None; // same package, no help
+        if package.is_empty() {
+            return None;
         }
         let base = format!("{}.{}", type_name, fn_suffix).replace('.', "$");
         Some(format!("_T${}${}${}$$", package, module, base))
+    }
+
+    fn declare_cross_module_init(
+        &self,
+        type_name: &str,
+        mangled_name: &str,
+    ) -> Option<inkwell::values::FunctionValue<'ctx>> {
+        if let Some(f) = self.module.get_function(mangled_name) {
+            return Some(f);
+        }
+        let sym = self
+            .program_scope
+            .borrow()
+            .as_ref()
+            .and_then(|scope| scope.borrow().get_symbol_deep(type_name))
+            .or_else(|| self.find_symbol_in_packages(type_name))?;
+        let binding = sym.borrow();
+        let (pkg, decl) = match &*binding {
+            Symbol::Class { package, decl, .. } | Symbol::Struct { package, decl, .. } => {
+                (package.clone(), decl.clone())
+            }
+            _ => return None,
+        };
+        let decl_borrow = decl.borrow();
+        let body = match &*decl_borrow {
+            Statement::ClassDecl { body, .. } | Statement::StructDecl { body, .. } => body,
+            _ => return None,
+        };
+        for s in body {
+            if let Statement::InitDecl { ty: Some(init_ty), parameters, .. } = &*s.borrow()
+                && let Type::Function(param_types, ret_type, is_vararg, throws_types) =
+                    &*init_ty.borrow()
+            {
+                let cross_mangled = self.find_cross_module_fn_mangled_for(
+                    &pkg, type_name, "init", parameters,
+                );
+                let init_mangled = cross_mangled.unwrap_or_else(|| {
+                    self.mangle_fn_name(&format!("{}.init", type_name), parameters)
+                });
+                if self.module.get_function(&init_mangled).is_some() {
+                    continue;
+                }
+                let self_param = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(
+                    Type::Void,
+                )))));
+                let mut all_params = vec![self_param];
+                if throws_types.is_some() {
+                    let err_ty = Rc::new(RefCell::new(Type::Pointer(Rc::new(RefCell::new(
+                        Type::Struct("Int8".to_string(), WeakSymbol(std::rc::Weak::new()), vec![]),
+                    )))));
+                    all_params.push(err_ty);
+                }
+                all_params.extend(param_types.iter().cloned());
+                if let Ok(fn_type) =
+                    self.get_function_type(ret_type.clone(), all_params, *is_vararg)
+                {
+                    self.module.add_function(&init_mangled, fn_type, None);
+                    let base = format!("{}.init", type_name);
+                    self.register_mangled_name(&base, &init_mangled);
+                    let local_mangled = self.mangle_fn_name(&format!("{}.init", type_name), parameters);
+                    if local_mangled != init_mangled
+                        && self.module.get_function(&local_mangled).is_none()
+                    {
+                        self.module.add_function(&local_mangled, fn_type, None);
+                    }
+                }
+            }
+        }
+        self.module.get_function(mangled_name)
+    }
+
+    fn find_cross_module_fn_mangled_for(
+        &self,
+        pkg: &str,
+        type_name: &str,
+        fn_suffix: &str,
+        params: &[Rc<RefCell<Parameter>>],
+    ) -> Option<String> {
+        let scope = self.program_scope.borrow();
+        let scope_ref = scope.as_ref()?;
+        let symbol = scope_ref
+            .borrow()
+            .get_symbol_deep(type_name)
+            .or_else(|| scope_ref.borrow().get_symbol_qualified(type_name))
+            .or_else(|| self.find_symbol_in_packages(type_name))?;
+        let (package, module) = match &*symbol.borrow() {
+            Symbol::Struct { package, decl, .. }
+            | Symbol::Class { package, decl, .. }
+            | Symbol::Enum { package, decl, .. } => {
+                let decl_borrow = decl.borrow();
+                let type_scope = match &*decl_borrow {
+                    Statement::StructDecl { scope, .. }
+                    | Statement::ClassDecl { scope, .. }
+                    | Statement::EnumDecl { scope, .. } => scope.as_ref().cloned(),
+                    _ => None,
+                };
+                drop(decl_borrow);
+                let module = type_scope
+                    .as_ref()
+                    .and_then(|s| {
+                        let module_name = self.resolve_qualified_name_from_scope(s);
+                        if !module_name.1.is_empty() {
+                            Some(module_name.1)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                (package.clone(), module)
+            }
+            _ => return None,
+        };
+        drop(symbol);
+        let _ = scope_ref;
+        drop(scope);
+        if package.is_empty() {
+            return None;
+        }
+        let labels: Vec<String> = params
+            .iter()
+            .map(|p| {
+                let pb = p.borrow();
+                if let Some(label) = &pb.label {
+                    label.value.clone()
+                } else {
+                    pb.name.value.clone()
+                }
+            })
+            .collect();
+        let types: Vec<String> = params
+            .iter()
+            .map(|p| {
+                let pb = p.borrow();
+                pb.ty
+                    .as_ref()
+                    .map(|t| self.type_to_abbreviation(&t.borrow()))
+                    .unwrap_or_else(|| "?".into())
+            })
+            .collect();
+        let base = format!("{}.{}", type_name, fn_suffix).replace('.', "$");
+        Some(format!(
+            "_T${}${}${}${}${}",
+            package,
+            module,
+            base,
+            labels.join("_"),
+            types.join("_")
+        ))
     }
 
     fn maybe_wrap_for_optional_return(
@@ -1427,9 +1615,18 @@ impl<'ctx> IRGenerator<'ctx> {
         }
     }
 
-    fn get_stored_struct_field_index(&self, struct_name: &str, field_name: &str) -> Result<usize> {
-        if let Some(scope) = self.program_scope.borrow().as_ref()
-            && let Some(symbol) = scope.borrow().get_symbol_deep(struct_name)
+    fn get_stored_struct_field_index(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+    ) -> Result<usize> {
+        let symbol_opt = self
+            .program_scope
+            .borrow()
+            .as_ref()
+            .and_then(|scope| scope.borrow().get_symbol_deep(struct_name))
+            .or_else(|| self.find_symbol_in_packages(struct_name));
+        if let Some(symbol) = symbol_opt
             && let Symbol::Struct { properties, .. } = &*symbol.borrow()
         {
             let mut stored_idx = 0;
@@ -12423,8 +12620,17 @@ impl<'ctx> IRGenerator<'ctx> {
                         }
                     })
                     .or_else(|| {
-                        if let Expression::Variable { symbol, .. } = &*object.borrow() {
+                        if let Expression::Variable { name, symbol, .. } = &*object.borrow() {
                             if let Some(sym) = symbol.as_ref().and_then(|s| s.0.upgrade()) {
+                                if let Symbol::Enum { name, .. } = &*sym.borrow() {
+                                    return Some(name.clone());
+                                }
+                            }
+                            let n = name.value.clone();
+                            if self.enum_types.borrow().contains_key(&n) {
+                                return Some(n);
+                            }
+                            if let Some(sym) = self.find_symbol_in_packages(&n) {
                                 if let Symbol::Enum { name, .. } = &*sym.borrow() {
                                     return Some(name.clone());
                                 }
@@ -12482,6 +12688,25 @@ impl<'ctx> IRGenerator<'ctx> {
                         match result.try_as_basic_value() {
                             inkwell::values::ValueKind::Basic(val) => return Ok(Some(val)),
                             _ => return Ok(None),
+                        }
+                    }
+                    if let Ok(case_index) = self.get_enum_case_index(&enum_name, &member.value) {
+                        if let Some(enum_llvm_type) = self.enum_types.borrow().get(&enum_name).copied() {
+                            if let Some(raw_llvm_type) = self.get_enum_raw_llvm_type(&enum_name) {
+                                let tag_value = self.get_enum_case_tag_value(&enum_name, &member.value).unwrap_or(case_index as u64);
+                                let raw_val = raw_llvm_type.into_int_type().const_int(tag_value, false);
+                                let alloca = self.builder.build_alloca(enum_llvm_type.as_basic_type_enum(), "")?;
+                                let raw_ptr = self.builder.build_struct_gep(enum_llvm_type, alloca, 0, "")?;
+                                self.builder.build_store(raw_ptr, raw_val)?;
+                                let val = self.builder.build_load(enum_llvm_type.as_basic_type_enum(), alloca, "")?;
+                                return Ok(Some(val));
+                            }
+                            let alloca = self.builder.build_alloca(enum_llvm_type.as_basic_type_enum(), "")?;
+                            let tag_ptr = self.builder.build_struct_gep(enum_llvm_type, alloca, 0, "")?;
+                            let tag_val = self.context.i8_type().const_int(case_index as u64, false);
+                            self.builder.build_store(tag_ptr, tag_val)?;
+                            let val = self.builder.build_load(enum_llvm_type.as_basic_type_enum(), alloca, "")?;
+                            return Ok(Some(val));
                         }
                     }
                 }
@@ -12840,12 +13065,36 @@ impl<'ctx> IRGenerator<'ctx> {
                                 (name, false)
                             } else {
                                 let init_key = format!("{}.init", name);
+                                let parameters_arg_count = parameters.len();
                                 let mangled = self
                                     .mangled_fn_names
                                     .borrow()
                                     .get(&init_key)
                                     .cloned()
-                                    .unwrap_or_else(|| self.mangle_fn_name(&init_key, &[]));
+                                    .or_else(|| {
+                                        let sym = self
+                                            .program_scope
+                                            .borrow()
+                                            .as_ref()
+                                            .and_then(|scope| scope.borrow().get_symbol_deep(&name))
+                                            .or_else(|| self.find_symbol_in_packages(&name));
+                                        if let Some(sym) = &sym {
+                                            let binding = sym.borrow();
+                                            if let Symbol::Class { decl, .. } | Symbol::Struct { decl, .. } = &*binding {
+                                                if let Statement::ClassDecl { body, .. } | Statement::StructDecl { body, .. } = &*decl.borrow() {
+                                                    for s in body {
+                                                        if let Statement::InitDecl { parameters, .. } = &*s.borrow() {
+                                                            if parameters.len() == parameters_arg_count {
+                                                                return Some(self.mangle_fn_name(&init_key, parameters));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None
+                                    })
+                                    .unwrap_or_else(|| self.mangle_init_name(&name, &init_key, parameters_arg_count));
                                 let effective = match self.module.get_function(&mangled) {
                                     Some(f) if f.get_first_basic_block().is_none() => self
                                         .find_cross_module_fn_mangled(&name, "init")
@@ -12878,6 +13127,47 @@ impl<'ctx> IRGenerator<'ctx> {
                             (mangled, false)
                         } else if let Some(mangled) = self.try_declare_function_from_scope(&name) {
                             (mangled, false)
+                        } else if let Some(ref sname) = *self.current_struct.borrow() {
+                            let method_base = format!("{}.{}", sname, name);
+                            let method_mangled = self
+                                .mangled_fn_names
+                                .borrow()
+                                .get(&method_base)
+                                .cloned()
+                                .unwrap_or_else(|| self.mangle_fn_name(&method_base, &[]));
+                            if self.module.get_function(&method_mangled).is_some()
+                                || self.mangled_fn_names.borrow().contains_key(&method_base)
+                            {
+                                if let Some(self_ptr) = self.lookup_variable("self") {
+                                    method_self_ptr = Some(self_ptr);
+                                }
+                                (method_mangled, false)
+                            } else {
+                                let init_name = format!("{}.init", name);
+                                let mangled = self
+                                    .mangled_fn_names
+                                    .borrow()
+                                    .get(&init_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| self.mangle_init_name(&name, &init_name, parameters.len()));
+                                let effective = match self.module.get_function(&mangled) {
+                                    Some(f) if f.get_first_basic_block().is_none() => self
+                                        .find_cross_module_fn_mangled(&name, "init")
+                                        .filter(|alt| {
+                                            self.module
+                                                .get_function(alt)
+                                                .and_then(|f| f.get_first_basic_block())
+                                                .is_some()
+                                        })
+                                        .unwrap_or(mangled),
+                                    None => self
+                                        .find_cross_module_fn_mangled(&name, "init")
+                                        .filter(|alt| self.module.get_function(alt).is_some())
+                                        .unwrap_or(mangled),
+                                    _ => mangled,
+                                };
+                                (effective, true)
+                            }
                         } else {
                             let init_name = format!("{}.init", name);
                             let mangled = self
@@ -12885,7 +13175,7 @@ impl<'ctx> IRGenerator<'ctx> {
                                 .borrow()
                                 .get(&init_name)
                                 .cloned()
-                                .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
+                                .unwrap_or_else(|| self.mangle_init_name(&name, &init_name, parameters.len()));
                             let effective = match self.module.get_function(&mangled) {
                                 Some(f) if f.get_first_basic_block().is_none() => self
                                     .find_cross_module_fn_mangled(&name, "init")
@@ -12934,10 +13224,14 @@ impl<'ctx> IRGenerator<'ctx> {
                                     .borrow()
                                     .get(&init_name)
                                     .cloned()
-                                    .unwrap_or_else(|| self.mangle_fn_name(&init_name, &[]));
-                                let mangled = self
-                                    .find_cross_module_fn_mangled(&fn_name, "init")
-                                    .unwrap_or(mangled);
+                                    .unwrap_or_else(|| self.mangle_init_name(&fn_name, &init_name, parameters.len()));
+                                let mangled = if self.module.get_function(&mangled).is_some() {
+                                    mangled
+                                } else {
+                                    self.find_cross_module_fn_mangled(&fn_name, "init")
+                                        .filter(|alt| self.module.get_function(alt).is_some())
+                                        .unwrap_or(mangled)
+                                };
                                 if self.module.get_function(&mangled).is_some()
                                     || self.class_types.borrow().contains_key(&fn_name)
                                     || self.struct_types.borrow().contains_key(&fn_name)
@@ -14170,18 +14464,18 @@ impl<'ctx> IRGenerator<'ctx> {
                     }
                     Some(f) => f,
                     None => {
-                        let alt_name = if is_init_call {
+                        if is_init_call {
                             if let Some(ref type_name) = callee_struct_name {
-                                self.find_cross_module_fn_mangled(type_name, "init")
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        if let Some(ref alt_name) = alt_name {
-                            if let Some(f) = self.module.get_function(alt_name) {
-                                f
+                                if let Some(f) = self.declare_cross_module_init(type_name, &function_name) {
+                                    f
+                                } else {
+                                    self.emit_error(
+                                        TrussDiagnosticCode::UndefinedFunction,
+                                        format!("Undefined function: '{}'", function_name),
+                                        None,
+                                    );
+                                    anyhow::bail!("Undefined function: {}", function_name);
+                                }
                             } else {
                                 self.emit_error(
                                     TrussDiagnosticCode::UndefinedFunction,
